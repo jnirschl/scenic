@@ -3,9 +3,8 @@
 set -o pipefail
 
 #SBATCH --job-name=test_scenic_gpu
-#SBATCH --partition=pasteur --qos=normal
-#SBATCH --nodelist=pasteur1
-#SBATCH --output=test_scenic_%j.out # STDOUT logs %j=job id
+#SBATCH --partition=syyeung --qos=normal
+#SBATCH --output=./test_scenic_%j.out # STDOUT logs %j=job id
 #SBATCH --error=./test_scenic_%j.err # Error logs %j=job id 
 #SBATCH --time=0:05:00 # Wall time limit days-HH:mm:ss
 #SBATCH --nodes=1 # Maximum number of nodes to be allocated
@@ -32,12 +31,12 @@ echo -e node_feat -p gpu | grep GPU_
 #srun /usr/local/cuda/samples/1_Utilities/deviceQuery/deviceQuery
 
 echo -e "Resources are allocated (with GPU)."
-if [[ -f /sailhome/jnirschl/miniconda3/etc/profile.d/conda.sh ]]; then
+if [[ -f $HOME/miniconda3/etc/profile.d/conda.sh ]]; then
 	echo -e "Activating conda environment scenic."
-	source /sailhome/jnirschl/miniconda3/etc/profile.d/conda.sh
+	source $HOME/miniconda3/etc/profile.d/conda.sh
 	conda activate scenic
 else
-	echo -e 'FileNotFoundError: /sailhome/jnirschl/miniconda3/etc/profile.d/conda.sh'
+	echo -e 'FileNotFoundError: $HOME/miniconda3/etc/profile.d/conda.sh'
 exit 1
 fi
 
@@ -46,7 +45,7 @@ export TF_CPP_MIN_LOG_LEVEL=0
 
  ## run dvc
 echo -e "Running Scenic MNIST example with GPU..."
-cd "/sailhome/jnirschl/GitHub/scenic"
+cd "$HOME/GitHub/scenic"
 python3 scenic/main.py --config=scenic/projects/baselines/configs/mnist/mnist_config.py --workdir=scenic/projects/mnist/
 
 echo -e "Exit code:	$?"
