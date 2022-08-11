@@ -27,6 +27,12 @@ NPROCS=`srun --nodes=${SLURM_NNODES} bash -c 'hostname' |wc -l`
 echo -e "NPROCS:\t$NPROCS"
 echo -e node_feat -p gpu | grep GPU_
 
+# load modules
+echo -e "Loading modules cudnn, py-tensorflow, and py-tensorboardx"
+module load cudnn
+module load py-tensorflow
+module load py-tensorboardx
+
 # list the allocated gpu, if desired
 #srun /usr/local/cuda/samples/1_Utilities/deviceQuery/deviceQuery
 
