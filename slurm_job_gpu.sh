@@ -25,13 +25,15 @@ Allocating resources..."
 # sample process (list hostnames of the nodes you've requested)
 NPROCS=`srun --nodes=${SLURM_NNODES} bash -c 'hostname' |wc -l` 
 echo -e "NPROCS:\t$NPROCS"
-echo -e node_feat -p gpu | grep GPU_
+#echo -e node_feat -p gpu | grep GPU_
+echo -e "NVIDIA-SMI:\t\n\t$(nvidia-smi)"
+echo -e "NVCC version:\t\n\t$(nvcc --version)"
 
 # load modules
 echo -e "Loading modules cudnn, py-tensorflow, and py-tensorboardx"
 module load cudnn
-module load py-tensorflow
-module load py-tensorboardx
+module load py-tensorflow/2.9.1_py39 # sherlock tensorflow module
+module load py-tensorboardx # sherlock tensorboardx module
 
 # list the allocated gpu, if desired
 #srun /usr/local/cuda/samples/1_Utilities/deviceQuery/deviceQuery
