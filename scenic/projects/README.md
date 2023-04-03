@@ -5,11 +5,34 @@
 
 ## List of projects hosted in Scenic
 
+*   [AdaTape](adatape)
+
+    > AdaTape is an adaptive computation transformer with elastic input sequence.
+
+*   [AdversarialTraining](adversarialtraining)
+
+    > Adversarial training is an implementation of modern forms of adversarial
+    > training that achieved state-of-the-art robustness results on image
+    > classifications. This includes [AdvProp](https://arxiv.org/abs/1911.09665)
+    > and (Pyramid Adversarial Training Improves ViT Performance)[https://arxiv.org/abs/2111.15121].
+
+*   [AVATAR](avatar)
+
+    > [AVATAR](https://gabeur.github.io/avatar-visspeech) is a
+    > sequence-to-sequence AudioVisual ASR TrAnsformeR which is
+    > trained end-to-end from spectrograms and full-frame RGB for the task of
+    > audiovisual speech recognition (AV-ASR).
+
 *   [ViViT](vivit)
 
     > ViViT is a family of pure-transformer based models for video
     > classification that achieved state-of-the-art results.
     > Details can be found in the [paper](https://arxiv.org/abs/2103.15691).
+
+*   [Tasseo](tasseo)
+
+    > Tasseo is a project that uses transformer based models for aberration
+    > detection from chromosome karyotype images.
 
 *   [TokenLearner](token_learner)
 
@@ -17,6 +40,11 @@
     > and more accurate video/image processing tasks. More can be found in
     > the [paper](https://arxiv.org/abs/2106.11297).
 
+*   [Token Turing Machines](token_turing)
+
+    > Token Turing Machines are a sequential, autoregressive transformer
+    > architecture with external memory. More can be found in the
+    > [paper](https://arxiv.org/abs/2106.11297).
 
 *   [FastViT](fast_vit)
 
@@ -70,6 +98,25 @@
     > Point Cloud Transformer (PCT) is a Transformer-based model for
     > performing inference (classification/segmentation) for point cloud data.
     > Details can be found in the [paper](https://arxiv.org/abs/2012.09688).
+
+*   [PolyViT](polyvit)
+
+    > PolyViT is a simple and effective model for co-training a single
+    > transformer backbone on multiple modalities and tasks, resulting in a
+    > parameter-efficient model that performs as well or better than models
+    > trained on single modalities or tasks.
+    > Details can be found in the [paper](https://arxiv.org/abs/2111.12993).
+
+*   [T5](t5)
+
+    > Wrappers of T5 models in [t5x](https://github.com/google-research/t5x).
+
+*   [Vid2Seq](vid2seq)
+
+    > Vid2Seq is a single-stage dense video captioning model, pre-trained on
+    > unlabelled narrated videos.
+    > Details can be found in the [paper](https://arxiv.org/abs/2302.14115).
+
 
 
 <a name="projects"></a>

@@ -1,4 +1,4 @@
-# Copyright 2022 The Scenic Authors.
+# Copyright 2023 The Scenic Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -315,7 +315,9 @@ def train(
   logging.info('Starting training loop at step %d.', start_step + 1)
   report_progress = periodic_actions.ReportProgress(
       num_train_steps=total_steps, writer=writer)
-  hooks = [report_progress]
+  hooks = []
+  if lead_host:
+    hooks.append(report_progress)
   if config.get('xprof', True) and lead_host:
     hooks.append(periodic_actions.Profile(num_profile_steps=5, logdir=workdir))
 
@@ -353,28 +355,27 @@ def train(
       # So we do unreplicate and fetch them to host using `unreplicate_and_get`.
       train_summary = train_utils.log_train_summary(
           step=step,
-          train_metrics=jax.tree_map(train_utils.unreplicate_and_get,
-                                     train_metrics),
-          extra_training_logs=jax.tree_map(train_utils.unreplicate_and_get,
-                                           extra_training_logs),
+          train_metrics=jax.tree_util.tree_map(train_utils.unreplicate_and_get,
+                                               train_metrics),
+          extra_training_logs=jax.tree_util.tree_map(
+              train_utils.unreplicate_and_get, extra_training_logs),
           writer=writer)
       # Reset metric accumulation for next evaluation cycle.
       train_metrics, extra_training_logs = [], []
-      ################### EVALUATION #######################
-      if (step % log_eval_steps == 1) or (step == total_steps):
-        with report_progress.timed('eval'):
-          eval_metrics = []
-          # Sync model state across replicas.
-          train_state = train_utils.sync_model_state_across_replicas(
-              train_state)
-          for _ in range(steps_per_eval):
-            eval_batch = next(dataset.valid_iter)
-            e_metrics, _ = eval_step_pmapped(train_state, eval_batch)
-            eval_metrics.append(train_utils.unreplicate_and_get(e_metrics))
-          eval_summary = train_utils.log_eval_summary(
-              step=step, eval_metrics=eval_metrics, writer=writer)
-        writer.flush()
-        del eval_metrics
+    ################### EVALUATION #######################
+    if (step % log_eval_steps == 1) or (step == total_steps):
+      with report_progress.timed('eval'):
+        eval_metrics = []
+        # Sync model state across replicas.
+        train_state = train_utils.sync_model_state_across_replicas(train_state)
+        for _ in range(steps_per_eval):
+          eval_batch = next(dataset.valid_iter)
+          e_metrics, _ = eval_step_pmapped(train_state, eval_batch)
+          eval_metrics.append(train_utils.unreplicate_and_get(e_metrics))
+        eval_summary = train_utils.log_eval_summary(
+            step=step, eval_metrics=eval_metrics, writer=writer)
+      writer.flush()
+      del eval_metrics
     ##################### CHECKPOINTING ###################
     if ((step % checkpoint_steps == 0 and step > 0) or
         (step == total_steps)) and config.checkpoint:

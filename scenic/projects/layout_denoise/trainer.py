@@ -19,7 +19,6 @@ import jax.profiler
 import ml_collections
 import numpy as np
 from scenic.dataset_lib import dataset_utils
-from scenic.google.xm import xm_utils
 from scenic.projects.baselines.detr import train_utils as detr_train_utils
 from scenic.projects.layout_denoise import train_utils as layout_train_utils
 from scenic.projects.layout_denoise.datasets import dataset
@@ -412,7 +411,7 @@ def train(
     """Runs evaluation code."""
     future = None
 
-    def _wait(future: Optional[futures.Future]) -> Any:
+    def _wait(future: Optional[futures.Future]) -> Any:  # pylint: disable=g-bare-generic
       if future is None:
         return None
       return future.result()
@@ -457,11 +456,11 @@ def train(
         # Collect preds and labels to be sent for computing global metrics.
         predictions = detr_train_utils.process_and_fetch_to_host(
             eval_predictions_all_hosts, eval_batch_all_hosts['batch_mask'])
-        predictions = jax.tree_map(np.asarray, predictions)
+        predictions = jax.tree_util.tree_map(np.asarray, predictions)
 
         labels = detr_train_utils.process_and_fetch_to_host(
             eval_batch_all_hosts['label'], eval_batch_all_hosts['batch_mask'])
-        labels = jax.tree_map(np.asarray, labels)
+        labels = jax.tree_util.tree_map(np.asarray, labels)
 
         if eval_step == 0:
           logging.info('Pred keys: %s', list(predictions[0].keys()))
@@ -615,7 +614,9 @@ def train(
   logging.info('Starting training loop at step %d.', start_step + 1)
   report_progress = periodic_actions.ReportProgress(
       num_train_steps=total_steps, writer=writer)
-  hooks = [report_progress]
+  hooks = []
+  if lead_host:
+    hooks.append(report_progress)
   if config.get('xprof', True) and lead_host:
     hooks.append(periodic_actions.Profile(num_profile_steps=5, logdir=workdir))
 
@@ -683,9 +684,10 @@ def train(
         chrono.tick(step, writer)
       train_summary = {}
       for train_task, train_ds in train_metrics.keys():
-        train_metrics_cpu = jax.tree_map(train_utils.unreplicate_and_get,
-                                         train_metrics[(train_task, train_ds)])
-        extra_training_logs_cpu = jax.tree_map(
+        train_metrics_cpu = jax.tree_util.tree_map(
+            train_utils.unreplicate_and_get,
+            train_metrics[(train_task, train_ds)])
+        extra_training_logs_cpu = jax.tree_util.tree_map(
             train_utils.unreplicate_and_get,
             extra_training_logs[(train_task, train_ds)])
         train_summary.update(
@@ -756,5 +758,5 @@ def train(
 
   pool.shutdown()
   # Wait until computations are done before exiting.
-  train_utils.barrier()
+  jax.random.normal(jax.random.PRNGKey(0), ()).block_until_ready()
   return train_state, train_summary, eval_dict

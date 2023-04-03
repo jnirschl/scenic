@@ -82,7 +82,7 @@ def sync_model_state_across_replicas(train_state: TrainState) -> TrainState:
   """
   #  We simply do "mean" here and this doesn't work with
   #  statistics like variance. (check the discussion in Flax for fixing this).
-  if jax.tree_leaves(train_state.model_state):
+  if jax.tree_util.tree_leaves(train_state.model_state):
     # If the model_state is not empty.
     new_model_state = train_state.model_state.copy(
         {'batch_stats': train_utils.pmap_mean(
@@ -130,7 +130,7 @@ def restore_checkpoint(checkpoint_path: str,
 def all_gather(tree: Any):
   """Gather across different hosts and flatten the first two dimensions."""
   gather_flat = lambda x: jnp.concatenate(jax.lax.all_gather(x, 'batch'), 0)
-  return jax.tree_map(gather_flat, tree)
+  return jax.tree_util.tree_map(gather_flat, tree)
 
 
 def mixup(batch: Dict['str', jnp.ndarray],
@@ -187,5 +187,3 @@ def mixup(batch: Dict['str', jnp.ndarray],
   batch['inputs'] = weight * images + (1.0 - weight) * images[reverse]
 
   return batch
-
-

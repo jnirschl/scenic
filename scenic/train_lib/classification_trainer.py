@@ -1,4 +1,4 @@
-# Copyright 2022 The Scenic Authors.
+# Copyright 2023 The Scenic Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -131,10 +131,10 @@ def train_step(
   new_params = optax.apply_updates(train_state.params, updates)
 
   training_logs['l2_grads'] = jnp.sqrt(
-      sum([jnp.vdot(g, g) for g in jax.tree_leaves(grad)]))
-  ps = jax.tree_leaves(new_params)
+      sum([jnp.vdot(g, g) for g in jax.tree_util.tree_leaves(grad)]))
+  ps = jax.tree_util.tree_leaves(new_params)
   training_logs['l2_params'] = jnp.sqrt(sum([jnp.vdot(p, p) for p in ps]))
-  us = jax.tree_leaves(updates)
+  us = jax.tree_util.tree_leaves(updates)
   training_logs['l2_updates'] = jnp.sqrt(sum([jnp.vdot(u, u) for u in us]))
   # TODO(dehghani): Can we get this from the optimizer instead?
   training_logs['learning_rate'] = lr_fn(train_state.global_step)
@@ -268,6 +268,7 @@ def train(
     train_state, start_step = train_utils.restore_checkpoint(
         workdir, train_state)
   chrono.load(train_state.metadata['chrono'])
+  train_state = train_state.replace(metadata={})
   # Replicate the optimizer, state, and rng.
   train_state = jax_utils.replicate(train_state)
   del params  # Do not keep a copy of the initial params.
@@ -303,6 +304,7 @@ def train(
   if not log_eval_steps:
     raise ValueError("'log_eval_steps' should be specified in the config.")
   checkpoint_steps = config.get('checkpoint_steps') or log_eval_steps
+  max_checkpoint_keep = config.get('max_checkpoint_keep', 3)
   log_summary_steps = config.get('log_summary_steps') or log_eval_steps
 
   # Ceil rounding such that we include the last incomplete batch.
@@ -317,13 +319,19 @@ def train(
   chrono.inform(start_step, total_steps, config.batch_size, steps_per_epoch)
   logging.info('Starting training loop at step %d.', start_step + 1)
   report_progress = periodic_actions.ReportProgress(
-      num_train_steps=total_steps, writer=writer)
+      num_train_steps=total_steps,
+      writer=writer,
+      every_secs=None,
+      every_steps=config.get('report_progress_step', log_summary_steps),
+  )
 
   def write_note(note):
     if lead_host:
       platform.work_unit().set_notes(note)
 
-  hooks = [report_progress]
+  hooks = []
+  if lead_host:
+    hooks.append(report_progress)
   if config.get('xprof', True) and lead_host:
     hooks.append(periodic_actions.Profile(num_profile_steps=5, logdir=workdir))
 
@@ -356,7 +364,7 @@ def train(
     ###################### LOG TRAIN SUMMARY ########################
     if ((step % log_summary_steps == 1) or (step == total_steps) or
         (lead_host and chrono.warmup)):
-      chrono.pause()
+      chrono.pause(wait_for=(train_metrics))
       if lead_host:
         chrono.tick(step, writer, write_note)
       # train_metrics is list of a dictionaries of metrics, where the shape of
@@ -374,40 +382,32 @@ def train(
       # Reset metric accumulation for next evaluation cycle.
       train_metrics, extra_training_logs = [], []
       chrono.resume()
-      ################### EVALUATION #######################
-      if (step % log_eval_steps == 1) or (step == total_steps):
-        chrono.pause(wait_for=(train_state.params))
-        with report_progress.timed('eval'):
-          eval_metrics = []
-          # Sync model state across replicas.
-          train_state = train_utils.sync_model_state_across_replicas(
-              train_state)
-          for _ in range(steps_per_eval):
-            eval_batch = next(dataset.valid_iter)
-            e_metrics, _ = eval_step_pmapped(train_state, eval_batch)
-            eval_metrics.append(train_utils.unreplicate_and_get(e_metrics))
-          eval_summary = train_utils.log_eval_summary(
-              step=step, eval_metrics=eval_metrics, writer=writer)
-        writer.flush()
-        del eval_metrics
-        chrono.resume()
+    ################### EVALUATION #######################
+    if (step % log_eval_steps == 1) or (step == total_steps):
+      chrono.pause(wait_for=(train_state.params))
+      with report_progress.timed('eval'):
+        eval_metrics = []
+        # Sync model state across replicas.
+        train_state = train_utils.sync_model_state_across_replicas(train_state)
+        for _ in range(steps_per_eval):
+          eval_batch = next(dataset.valid_iter)
+          e_metrics, _ = eval_step_pmapped(train_state, eval_batch)
+          eval_metrics.append(train_utils.unreplicate_and_get(e_metrics))
+        eval_summary = train_utils.log_eval_summary(
+            step=step, eval_metrics=eval_metrics, writer=writer)
+      writer.flush()
+      del eval_metrics
+      chrono.resume()
     ##################### CHECKPOINTING ###################
-    if ((step % checkpoint_steps == 0 and step > 0) or
+    if ((step % checkpoint_steps == 1 and step > 1) or
         (step == total_steps)) and config.checkpoint:
       chrono.pause(wait_for=(train_state.params, train_state.opt_state))
       with report_progress.timed('checkpoint'):
-        # Sync model state across replicas.
-        train_state = train_utils.sync_model_state_across_replicas(train_state)
-        if lead_host:
-          # Take the first replica.
-          unrep_train_state = jax_utils.unreplicate(train_state)
-          metadata = unrep_train_state.metadata
-          metadata['chrono'] = chrono.save()
-          unrep_train_state.replace(metadata=metadata)  # pytype: disable=attribute-error
-          train_utils.save_checkpoint(workdir, unrep_train_state)
-          del unrep_train_state
-      chrono.resume()  # Un-pause now.
+        train_utils.handle_checkpointing(
+            train_state, chrono, workdir, max_checkpoint_keep)
+      chrono.resume()
+
   # Wait until computations are done before exiting.
-  jax.random.normal(jax.random.PRNGKey(0), ()).block_until_ready()
+  train_utils.barrier_across_hosts()
   # Return the train and eval summary after last step for regression testing.
   return train_state, train_summary, eval_summary

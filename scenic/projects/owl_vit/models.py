@@ -1,8 +1,4 @@
-"""Implementation of Conditional ViTPlus detection model.
-
-The implementation allows for: 1) using label-embeddings to use as fixed class
-projection, 2) (optionally) conditioning the decoder on a set of given labels.
-"""
+"""Implementation of the OWL-ViT detection model."""
 
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -11,30 +7,32 @@ from flax.training import checkpoints
 import jax.numpy as jnp
 import ml_collections
 from scenic.projects.owl_vit import layers
+from scenic.projects.owl_vit import matching_base_models
 from scenic.projects.owl_vit import utils
 from scenic.projects.owl_vit.clip import model as clip_model
 from scenic.projects.owl_vit.clip import tokenizer as clip_tokenizer
 
+Params = layers.Params
+
 
 class TextZeroShotDetectionModule(nn.Module):
-  """Text-query-based ViT+ model with detection head.
+  """Text-query-based OWL-ViT model.
 
   This module computes joint text and image embeddings which are then
-  used for localized prediction of bboxes and classes.
+  used for localized prediction of bounding boxes and classes.
 
   Attributes:
     body_configs: Configurations of the image-text module.
+    mask_head_configs: Configurations for the (optional) mask head.
     normalize: Whether to normalize the output of the model and the
       label_embeddings before computing the class logits.
     box_bias: Type of box bias - one of 'location', 'size' or 'both'.
-    mask_size: The height (and width) of masks predicted by the mask head. If
-      None, no mask prediction will occur.
   """
 
   body_configs: ml_collections.ConfigDict
+  mask_head_configs: Optional[ml_collections.ConfigDict] = None
   normalize: bool = False
   box_bias: str = 'both'
-  mask_size: Optional[int] = None
 
   def tokenize(self, text: str, max_token_len: int = 16) -> List[int]:
     return clip_tokenizer.tokenize(text, max_token_len)
@@ -42,44 +40,42 @@ class TextZeroShotDetectionModule(nn.Module):
   @nn.nowrap
   def load_variables(self, checkpoint_path: str) -> Mapping[str, Any]:
     restored = checkpoints.restore_checkpoint(checkpoint_path, target=None)
-    return {'params': restored['optimizer']['target']}
+    if 'optimizer' in restored:
+      # Pre-Optax checkpoint:
+      params = restored['optimizer']['target']
+    else:
+      params = restored['params']
+    return {'params': params}
 
   def setup(self):
-    self._embedder = layers.ImageTextEmbedder(
+    self._embedder = layers.ClipImageTextEmbedder(
         self.body_configs, name='backbone')
-    if 'out_dim' in self.body_configs:
-      out_dim = self.body_configs.out_dim
-    elif 'type' in self.body_configs and self.body_configs.type == 'clip':
-      out_dim = clip_model.CONFIGS[self.body_configs.variant]['embed_dim']
-    else:
-      # Attempt to lazily determine the output dimension.
-      out_dim = None
+
     self._class_head = layers.ClassPredictor(
-        out_dim=out_dim,
+        out_dim=clip_model.CONFIGS[self.body_configs.variant]['embed_dim'],
         normalize=self.normalize, name='class_head')
+
     self._box_head = layers.PredictorMLP(
         mlp_dim=None, out_dim=4, num_layers=3,
         out_activation=None, name='obj_box_head')
-    if self.mask_size is not None:
-      self._mask_head = layers.PredictorMLP(
-          mlp_dim=None,
-          out_dim=self.mask_size * self.mask_size,
-          num_layers=3,
-          out_activation=None,
+
+    if self.mask_head_configs is not None:
+      self._mask_head = layers.BoxMaskHead(
+          **self.mask_head_configs,  # pylint: disable=not-a-mapping
           name='obj_mask_head')
 
   def box_predictor(self, image_features: jnp.ndarray,
                     feature_map: jnp.ndarray) -> Dict[str, jnp.ndarray]:
-    """Computes predicted bounding boxes.
+    """Predicts bounding boxes from image features.
 
     Args:
-      image_features: Features extracted from the image, returned by the
+      image_features: Feature tokens extracted from the image, returned by the
         `embedder` function.
       feature_map: A spatial re-arrangement of image_features, also returned by
         the `embedder` function.
 
     Returns:
-      list of predicted boxes (cxcywh normalized to 0, 1) nested within
+      List of predicted boxes (cxcywh normalized to 0, 1) nested within
         a dictionary.
     """
     # Bounding box detection head [b, num_patches, 4].
@@ -99,10 +95,10 @@ class TextZeroShotDetectionModule(nn.Module):
     """Applies the class head to the image features.
 
     Args:
-      image_features: Features extracted from the image embedder.
-      query_embeddings: Optional list of (or image) embeddings. If no embeddings
-        are provided, no logits will be computed and only the class embeddings
-        for the image will be returned.
+      image_features: Feature tokens extracted by the image embedder.
+      query_embeddings: Optional list of text (or image) embeddings. If no
+        embeddings are provided, no logits will be computed and only the class
+        embeddings for the image will be returned.
       query_mask: Must be provided with query_embeddings. A mask indicating
         which query embeddings are valid.
 
@@ -112,33 +108,42 @@ class TextZeroShotDetectionModule(nn.Module):
     """
     return self._class_head(image_features, query_embeddings, query_mask)
 
-  def mask_predictor(self, image_features) -> Dict[str, jnp.ndarray]:
+  def mask_predictor(self,
+                     image,
+                     image_tokens,
+                     boxes,
+                     *,
+                     true_boxes=None) -> Dict[str, jnp.ndarray]:
     """Predicts (cropped) segmentation masks from the image features.
 
     Args:
-      image_features: Features extracted from the image embedder.
+      image: Input image, for extracting low-level image features.
+      image_tokens: High-level features from the image embedder.
+      boxes: Predicted bounding boxes corresponding to the image tokens.
+      true_boxes: For filtering mask head predictions during training.
 
     Returns:
       A dictionary containing the predicted segmentation masks. The mask at
         index i corresponds to the predicted box in `pred_boxes` at index i.
     """
-    if self.mask_size is None:
-      raise ValueError('Must pass mask_size to use mask head.')
-    pred_masks = self._mask_head(image_features)
-    batch_size = image_features.shape[0]
+    if self.mask_head_configs is None:
+      raise ValueError('Must pass mask_head_configs to use mask head.')
+    pred_masks = self._mask_head(
+        image, image_tokens, boxes, true_boxes=true_boxes)
+    batch_size = image_tokens.shape[0]
+    mask_size = self.mask_head_configs.mask_size
     return {
         'pred_masks':
-            jnp.reshape(pred_masks,
-                        (batch_size, -1, self.mask_size, self.mask_size))
+            jnp.reshape(pred_masks, (batch_size, -1, mask_size, mask_size))
     }
 
   def image_embedder(self, images: jnp.ndarray, train: bool) -> jnp.ndarray:
     """Embeds images into feature maps.
 
     Args:
-      images: images of shape (batch, self.input_size, self.input_size, 3).
-        Images should be in range [-1., 1.] with padding set to 0 and at the
-        bottom right of the image.
+      images: images of shape (batch, input_size, input_size, 3), scaled to the
+        input range defined in the config. Padding should be at the bottom right
+        of the image.
       train: Whether or not we are in training mode.
 
     Returns:
@@ -160,31 +165,35 @@ class TextZeroShotDetectionModule(nn.Module):
       which is num_dimensions instead of num_tokens.
     """
     _, text_features = self._embedder(texts=text_queries, train=train)
-    return text_features
+    return text_features  # pytype: disable=bad-return-type  # jax-ndarray
 
   def __call__(self,
                inputs: jnp.ndarray,
                text_queries: jnp.ndarray,
                train: bool,
                *,
+               true_boxes: Optional[jnp.ndarray] = None,
                debug: bool = False) -> Mapping[str, Any]:
     """Applies TextZeroShotDetectionModule on the input.
 
     Args:
       inputs: Images [batch_size, height, width, 3].
-      text_queries: Queries to condition the model on. Queries starting with 0
-        stand for padding [batch_size=b, num_queries=q, max_query_length=l].
+      text_queries: Queries to score boxes on. Queries starting with 0 stand for
+        padding [batch_size=b, num_queries=q, max_query_length=l].
       train: Whether it is training.
-      debug: Whether the debug mode is enabled. debug=True enables model
-        specific logging/storing some values using jax.host_callback. Not used.
+      true_boxes: For filtering mask head predictions during training.
+      debug: Unused.
 
     Returns:
       Outputs dict with items:
-        pred_logits: Class logits [b, num_patches, num_queries + 1].
+        pred_logits: Class logits [b, num_patches, num_queries].
         pred_boxes: Predicted bounding boxes [b, num_patches, 4].
         feature_map: Image embeddings 2d feature map [b, sp, sp, img_emb_dim].
     """
     del debug
+    if not train and true_boxes is not None:
+      raise ValueError('True boxes should only be supplied during training.')
+
     # Embed images:
     feature_map = self.image_embedder(inputs, train)
     b, h, w, d = feature_map.shape
@@ -192,7 +201,7 @@ class TextZeroShotDetectionModule(nn.Module):
 
     # Embed queries:
     query_embeddings = self.text_embedder(text_queries, train)
-    # If first token is 0, then this is a padded query [b, q].
+    # If first token is 0, then this is a padding query [b, q].
     query_mask = (text_queries[..., 0] > 0).astype(jnp.float32)
 
     outputs = {
@@ -200,7 +209,7 @@ class TextZeroShotDetectionModule(nn.Module):
         'query_embeddings': query_embeddings,
     }
 
-    # Classification [b, num_patches, num_queries+1]:
+    # Classification [b, num_patches, num_queries]:
     outputs.update(
         self.class_predictor(image_features, query_embeddings, query_mask))
 
@@ -208,7 +217,58 @@ class TextZeroShotDetectionModule(nn.Module):
     outputs.update(self.box_predictor(image_features, feature_map))
 
     # Predict masks:
-    if self.mask_size is not None:
-      outputs.update(self.mask_predictor(image_features))
+    if self.mask_head_configs is not None:
+      outputs.update(
+          self.mask_predictor(
+              inputs,
+              image_features,
+              outputs['pred_boxes'],
+              true_boxes=true_boxes))
 
     return outputs
+
+  def load(
+      self, params: Params,
+      init_config: ml_collections.ConfigDict) -> Params:
+    """Loads backbone parameters for this model from a backbone checkpoint."""
+    if init_config.get('codebase') == 'clip':
+      # Initialize backbone parameters from an external codebase.
+      params['backbone'] = self._embedder.load_backbone(
+          params['backbone'], init_config.get('checkpoint_path'))
+    else:
+      # Initialize all parameters from a Scenic checkpoint.
+      restored_train_state = checkpoints.restore_checkpoint(
+          init_config.checkpoint_path, target=None)
+      if 'optimizer' in restored_train_state:
+        # Pre-Optax checkpoint:
+        params = restored_train_state['optimizer']['target']
+      else:
+        params = restored_train_state['params']
+
+      # Explicitly removing unused parameters after loading:
+      params['class_head'].pop('padding', None)
+      params['class_head'].pop('padding_bias', None)
+
+    return params
+
+
+class TextZeroShotDetectionModel(matching_base_models.ObjectDetectionModel):
+  """OWL-ViT model for detection."""
+
+  def build_flax_model(self) -> nn.Module:
+    return TextZeroShotDetectionModule(
+        body_configs=self.config.model.body,
+        normalize=self.config.model.normalize,
+        box_bias=self.config.model.box_bias)
+
+
+class TextZeroShotDetectionModelWithMasks(
+    matching_base_models.ObjectDetectionModelWithMasks):
+  """ViT+ model for detection that also predicts masks."""
+
+  def build_flax_model(self) -> nn.Module:
+    return TextZeroShotDetectionModule(
+        body_configs=self.config.model.body,
+        mask_head_configs=self.config.model.mask_head,
+        normalize=self.config.model.normalize,
+        box_bias=self.config.model.box_bias)

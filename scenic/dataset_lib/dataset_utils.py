@@ -1,4 +1,4 @@
-# Copyright 2022 The Scenic Authors.
+# Copyright 2023 The Scenic Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ Xiaohua Zhai and other collaborators from Brain ZRH.
 
 import collections
 import functools
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 from absl import logging
 from flax.training import common_utils
@@ -111,9 +111,15 @@ def maybe_pad_batch(batch: Dict[str, PyTree],
   """
   assert batch_dim >= 0, f'batch_dim=={batch_dim} is expected to be >= 0'
   if inputs_key is None:
-    sample_tensor = jax.tree_leaves(batch)[0]
+    sample_tensor = jax.tree_util.tree_leaves(batch)[0]
   else:
     sample_tensor = batch[inputs_key]
+  if sample_tensor.shape[batch_dim] > batch_size:
+    raise ValueError(
+        f'The indicated target batch_size is {batch_size}, but '
+        'the size of the current batch is larger than that: '
+        f'{sample_tensor.shape[batch_dim]}.'
+    )
   batch_pad = batch_size - sample_tensor.shape[batch_dim]
 
   if pixel_level:
@@ -479,24 +485,37 @@ def get_num_examples(dataset, split, data_dir=None):
   num_examples = builder.info.splits[split].num_examples
   remainder = num_examples % jax.process_count()
   if remainder:
-    warning = (f'Dropping {remainder} examples for the '
-               f'{builder.info.name} dataset, {split} split. '
-               f'The reason is that all hosts should have the same number '
-               f'of examples in order to guarantee that they stay in sync.')
+    warning = (
+        f'Dropping {remainder} examples for the '
+        f'{builder.info.name} dataset, {split} split. '
+        'The reason is that all hosts should have the same number '
+        'of examples in order to guarantee that they stay in sync.'
+    )
     logging.warning(warning)
 
   return num_examples
 
 
-def get_dataset_tfds(dataset,
-                     split,
-                     shuffle_files=True,
-                     data_dir=None,
-                     feature_key='image'):
+def get_dataset_tfds(
+    dataset: str,
+    split: str,
+    shuffle_files: bool = True,
+    data_dir: Optional[str] = None,
+    skip_decode: Optional[Sequence[str]] = ('image',),
+):
   """Data provider."""
   builder = get_builder(dataset, data_dir)
-  split = tfds.even_splits(
-      split, jax.process_count(), drop_remainder=True)[jax.process_index()]
+  split = tfds.even_splits(split, jax.process_count(), drop_remainder=True)[
+      jax.process_index()
+  ]
+  if skip_decode is not None:
+    skip_decoders = {
+        f: tfds.decode.SkipDecoding()
+        for f in skip_decode
+        if f in builder.info.features
+    }
+  else:
+    skip_decoders = None
   # Each host is responsible for a fixed subset of data
   return builder.as_dataset(
       split=split,
@@ -506,7 +525,7 @@ def get_dataset_tfds(dataset,
           try_autocache=False,  # We control this, esp. for few-shot.
           add_tfds_id=True,
       ),
-      decoders={feature_key: tfds.decode.SkipDecoding()})
+      decoders=skip_decoders)
 
 
 def make_pipeline(data,
@@ -521,7 +540,8 @@ def make_pipeline(data,
                   ignore_errors=False,
                   dataset_service_address=None):
   """Makes an input pipeline for `data`."""
-  assert cache in ('loaded', 'batched', False, None)
+  if cache not in ('loaded', 'batched', False, None):
+    raise ValueError(f'Unknown cache value {cache}')
 
   data = _add_tpu_host_options(data)
 

@@ -1,4 +1,4 @@
-# Copyright 2022 The Scenic Authors.
+# Copyright 2023 The Scenic Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,14 +14,14 @@
 
 """Common neural network funcitonality that doesn't require parameters."""
 
-from typing import Callable, Iterable
+from typing import Callable, Sequence
 import flax.linen as nn
 import jax
 from jax import lax
 import jax.numpy as jnp
 import numpy as np
 
-Initializer = Callable[[jnp.ndarray, Iterable[int], jnp.dtype], jnp.ndarray]
+Initializer = Callable[[jnp.ndarray, Sequence[int], jnp.dtype], jnp.ndarray]
 
 
 def extract_image_patches(lhs,

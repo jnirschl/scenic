@@ -1,4 +1,4 @@
-# Copyright 2022 The Scenic Authors.
+# Copyright 2023 The Scenic Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -192,6 +192,54 @@ def weighted_topk_correctly_classified(logits: jnp.ndarray,
   return correct.astype(jnp.int32)
 
 
+def weighted_precision_at_k(logits: jnp.ndarray,
+                            multi_hot_target: jnp.ndarray,
+                            weights: Optional[jnp.ndarray] = None,
+                            k: int = 5) -> jnp.ndarray:
+  """Computes fraction of correct predictions among the top k predictions.
+
+  This computes the weighted precision-at-k (i.e. the fraction of true positives
+  among the top k predicted classes) in a single, potentially padded minibatch.
+  If the minibatch/inputs is padded (i.e., it contains null examples/pad pixels)
+  it is assumed that weights is a binary mask where 0 indicates that the
+  example/pixel is null/padded. We assume the trainer will aggregate and divide
+  by number of samples.
+
+  Args:
+    logits: Output of model in shape [batch, ..., num_classes].
+    multi_hot_target: Multi hot vector of shape [batch, ..., num_classes].
+    weights: None or array of shape [batch, ...] (rank of one_hot_target -1).
+    k: Number of top predictions to consider.
+
+  Returns:
+    The precision for each example in the batch, given top k predictions.
+  """
+  if logits.ndim != multi_hot_target.ndim:
+    raise ValueError(
+        'Incorrect shapes. Got shape %s logits and %s one_hot_target' %
+        (str(logits.shape), str(multi_hot_target.shape)))
+  if k <= 0 or k > logits.shape[-1]:
+    raise ValueError('Incorrect k. k must be in [1,%s]' %
+                     str(logits.shape[-1]))
+
+  topk_pred = jax.lax.top_k(logits, k)[1]
+
+  num_classes = logits.shape[-1]
+  multi_hot_pred = jnp.sum(
+      jax.nn.one_hot(topk_pred, num_classes=num_classes), axis=-2)
+
+  true_positive = jnp.sum(
+      multi_hot_pred * multi_hot_target, axis=-1).astype(jnp.float32)
+  # Above, the model is forced to predict exactly k positive classes, so the sum
+  # of true and false positives is equal to k:
+  precision = true_positive / k
+
+  if weights is not None:
+    precision = apply_weights(precision, weights)
+
+  return precision
+
+
 def weighted_recall(logits: Array, multi_hot_target: Array,
                     weights: Optional[Array] = None) -> Array:
   """Computes weighted recall given the top k prediction.
@@ -275,7 +323,8 @@ def weighted_unnormalized_softmax_cross_entropy(
     weights: Optional[jnp.ndarray] = None,
     label_smoothing: Optional[float] = None,
     label_weights: Optional[jnp.ndarray] = None,
-    logits_normalized: bool = False) -> jnp.ndarray:
+    logits_normalized: bool = False,
+    keep_label_dimension: bool = False) -> jnp.ndarray:
   """Computes weighted softmax cross entropy give logits and targets.
 
   This computes sum_(x,y) softmax-ce(x, y) for a single, potentially padded
@@ -290,6 +339,8 @@ def weighted_unnormalized_softmax_cross_entropy(
     label_smoothing: Scalar to use to smooth the one-hot labels.
     label_weights: Weight per label of shape [num_classes].
     logits_normalized: If True, the logits are assumed to already be normalized.
+    keep_label_dimension: If True, the class dimension of the output loss is not
+      summed over.
 
   Returns:
     The softmax cross entropy of the examples in the given batch.
@@ -309,9 +360,12 @@ def weighted_unnormalized_softmax_cross_entropy(
 
   if not logits_normalized:
     logits = nn.log_softmax(logits)
-  loss = -jnp.einsum('...k,...k->...', one_hot_targets, logits)
+  loss = -one_hot_targets * logits
   if weights is not None:
     loss = apply_weights(loss, weights)
+
+  if not keep_label_dimension:
+    loss = loss.sum(axis=-1)
 
   return loss
 
@@ -448,7 +502,7 @@ def l2_regularization(params: PyTree):
     L2 norm.
 
   """
-  weight_penalty_params = jax.tree_leaves(params)
+  weight_penalty_params = jax.tree_util.tree_leaves(params)
   return sum([jnp.sum(x**2) for x in weight_penalty_params if x.ndim > 1])
 
 
@@ -474,7 +528,7 @@ def weighted_l1_loss(x: jnp.ndarray,
   if not reduction:
     return abs_diff
   elif reduction == 'mean':
-    return abs_diff.mean()
+    return abs_diff.mean()  # pytype: disable=bad-return-type  # jax-ndarray
 
 
 def weighted_box_l1_loss(
@@ -688,11 +742,15 @@ def focal_softmax_cross_entropy(
     label_smoothing: Optional[float] = None,
     label_weights: Optional[jnp.ndarray] = None,
     logits_normalized: bool = False,
-    gamma: Optional[float] = 2.0) -> jnp.ndarray:
+    gamma: Optional[float] = 2.0,
+    keep_label_dimension: bool = False) -> jnp.ndarray:
   """Computes focal softmax cross-entropy given logits and targets.
 
-  This computes focal loss: (1-p_t)**gamma -log p_t, where p_t is the softmax
-  probability of the target.
+  Focal loss as defined in https://arxiv.org/abs/1708.02002. Assuming y is the
+  target vector and p is the predicted probability for the class, then:
+
+  p_t = p if y == 1 and 1-p otherwise
+  Focal loss = -(1-p_t)**gamma * log(p_t)
 
   NOTE: this is weighted unnormalized computation of loss that returns the loss
   of examples in the batch. If you are using it as a loss function, you can
@@ -714,17 +772,24 @@ def focal_softmax_cross_entropy(
     label_weights: Weight per label of shape [num_classes].
     logits_normalized: If True, the logits are assumed to be log probs.
     gamma: Modulating factor of the focal loss.
+    keep_label_dimension: If True, the class dimension of the output loss is not
+      summed over.
 
   Returns:
     The loss of the examples in the given batch.
   """
   loss = weighted_unnormalized_softmax_cross_entropy(
       logits, one_hot_targets, weights=None, label_smoothing=label_smoothing,
-      label_weights=label_weights, logits_normalized=logits_normalized)
-  prob = jnp.exp(-loss)  # Loss is -log(p_t)
+      label_weights=label_weights, logits_normalized=logits_normalized,
+      keep_label_dimension=True)
+  prob = jnp.exp(logits) if logits_normalized else jax.nn.softmax(logits)
+  prob = (prob * one_hot_targets).sum(axis=-1, keepdims=True)
   loss *= (1. - prob)**gamma
   if weights is not None:
     loss = apply_weights(loss, weights)
+
+  if not keep_label_dimension:
+    loss = loss.sum(axis=-1)
 
   return loss
 
@@ -740,10 +805,13 @@ def focal_sigmoid_cross_entropy(
     gamma: Optional[float] = 2.0) -> jnp.ndarray:
   """Computes focal softmax cross-entropy given logits and targets.
 
-  Focal loss assuming y is the binary target vector:
-  alpha * (1-p_t)**gamma -log p_t, if y_t = 1, and
-  (1.-alpha) * p_t**gamma -log (1 - p_t), if y_t = 0,
-  and p_t is the sigmoid probability at index t.
+  Focal loss as defined in https://arxiv.org/abs/1708.02002. Assuming y is the
+  target vector and p is the predicted probability for the class, then:
+
+  p_t = p if y == 1 and 1-p otherwise
+  alpha_t = alpha if y == 1 and 1-alpha otherwise
+
+  Focal loss = -alpha_t * (1-p_t)**gamma * log(p_t)
 
   NOTE: this is weighted unnormalized computation of loss that returns the loss
   of examples in the batch. If you are using it as a loss function, you can

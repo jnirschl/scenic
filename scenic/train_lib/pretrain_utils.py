@@ -1,4 +1,4 @@
-# Copyright 2022 The Scenic Authors.
+# Copyright 2023 The Scenic Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,14 +14,15 @@
 
 """Utility functions for using pretrained models."""
 
-import collections
+from collections import abc
 import os
 import re
-from typing import Any, Mapping, List, Optional, Union
+from typing import Any, Dict, Mapping, List, Optional, Union
 
 from absl import logging
 import flax
 from flax.training import checkpoints
+import numpy as np
 
 from scenic.train_lib import train_utils
 from tensorflow.io import gfile
@@ -170,9 +171,14 @@ def restore_pretrained_checkpoint(
   else:
     # restored_train_state was trained using flax.optim. Note that this does
     # not convert the naming of pre-Linen checkpoints.
-    restored_params = flax.core.freeze(
-        restored_train_state['optimizer']['target'])
+    restored_params = restored_train_state['optimizer']['target']
+    if 'params' in restored_params:  # Backward compatibility.
+      restored_params = restored_params['params']
+      restored_params = dict(checkpoints.convert_pre_linen(restored_params))
+    restored_params = flax.core.freeze(restored_params)
+
   restored_model_state = flax.core.freeze(restored_train_state['model_state'])
+
   if not train_state:
     train_state = train_utils.TrainState()
     params = restored_params
@@ -207,7 +213,7 @@ def inspect_params(*,
     items = []
     for k, v in d.items():
       path = parent_key + sep + k if parent_key else k
-      if isinstance(v, collections.MutableMapping):
+      if isinstance(v, abc.MutableMapping):
         items.extend(_flatten_params(v, path, sep=sep).items())
       else:
         items.append((path, v))
@@ -262,3 +268,67 @@ def inspect_params(*,
         f'Restored params from checkpoint: {restored_flat.keys()}.\n'
         f'Expected params from code: {expected_flat.keys()}.')
   return restored_params
+
+
+def convert_big_vision_to_scenic_checkpoint(
+    checkpoint_path: str,
+    train_state: Optional[train_utils.TrainState] = None,
+    convert_to_linen: bool = True) -> train_utils.TrainState:
+  """Converts a big_vision checkpoint to a scenic train state.
+
+  The model weights, global step and accumulated train time are extracted.
+  Optimizer state, such as the momentum, is not extracted.
+
+  Args:
+    checkpoint_path: Path to big_vision checkpoint.
+    train_state: A Scenic TrainState object.
+    convert_to_linen: Whether to convert to Linen format.
+
+  Returns:
+    restored_train_state: Scenic train state with model weights, global step
+      and accumulated training time.
+  """
+
+  def unflatten_dict(flattened: Dict[str, Any],
+                     separator: str = '/',
+                     leaf_idx: int = -1) -> Dict[str, Any]:
+    unflattened = {}
+    for k, v in flattened.items():
+      subtree = unflattened
+      if leaf_idx != 0:
+        path = k.split(separator)[:leaf_idx]
+      else:
+        path = k.split(separator)
+      for k2 in path[:-1]:
+        if k2 not in subtree:
+          subtree[k2] = {}
+        subtree = subtree[k2]
+      subtree[path[-1]] = v
+    return unflattened
+
+  logging.info('Loading big_vision checkpoint from %s', checkpoint_path)
+  checkpoint_data = np.load(gfile.GFile(checkpoint_path, 'rb'))
+  tree = unflatten_dict(checkpoint_data, separator='/', leaf_idx=0)
+
+  restored_params = tree['opt']['target']
+  if convert_to_linen:
+    restored_params = checkpoints.convert_pre_linen(restored_params)
+  restored_params = dict(restored_params)
+  if train_state:
+    restored_params = inspect_params(
+        expected_params=train_state.params,
+        restored_params=restored_params,
+        fail_if_extra=False,
+        fail_if_missing=False,
+        fail_if_shapes_mismatch=False)
+  else:
+    train_state = train_utils.TrainState()
+
+  # pytype: disable=wrong-arg-types
+  restored_train_state = train_state.replace(  # pytype: disable=attribute-error
+      global_step=int(tree['opt']['state']['step']),
+      params=restored_params,
+      )
+  # pytype: enable=wrong-arg-types
+
+  return restored_train_state

@@ -1,4 +1,4 @@
-# Copyright 2022 The Scenic Authors.
+# Copyright 2023 The Scenic Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -175,7 +175,7 @@ def tree_flatten_with_names(
   Returns:
     A list of values with names: [(name, value), ...]
   """
-  vals, tree_def = jax.tree_flatten(tree)
+  vals, tree_def = jax.tree_util.tree_flatten(tree)
 
   # "Fake" token tree that is use to track jax internal tree traversal and
   # adjust our custom tree traversal to be compatible with it.
@@ -194,7 +194,7 @@ def tree_map_with_names(
     f: Callable[[jnp.ndarray], jnp.ndarray],
     param_tree: PyTree,
     match_name_fn: Callable[[str], bool] = lambda name: True) -> PyTree:
-  """Like jax.tree_map but with a filter on the leaf path name.
+  """Like jax.tree_util.tree_map but with a filter on the leaf path name.
 
   Args:
     f: The function to be applied to each parameter in `param_tree`. Takes value

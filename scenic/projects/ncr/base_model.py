@@ -29,7 +29,7 @@ class NCRModel(base_model.BaseModel):
   Supports both softmax-classification and multi-label classification models.
   """
 
-  def loss_function(
+  def loss_function(  # pytype: disable=signature-mismatch  # overriding-return-type-checks
       self,
       logits: Array,
       batch: base_model.Batch,
@@ -103,7 +103,7 @@ class NCRModel(base_model.BaseModel):
     loss_metrics['ncr_loss'] = 0.0
     loss_metrics['total_loss'] = total_loss
 
-    return total_loss, loss_metrics
+    return total_loss, loss_metrics  # pytype: disable=bad-return-type  # jax-ndarray
 
   def ncr_loss(
       self,
@@ -143,6 +143,8 @@ class NCRModel(base_model.BaseModel):
         one_hot_targets,
         weights,
         label_smoothing=self.config.get('label_smoothing'))
+
+    softmax_ce_loss = (1.0 - ncr_loss_weight) * softmax_ce_loss
     loss_metrics['softmax_cross_entropy'] = softmax_ce_loss
     if self.config.get('l2_decay_factor') is None:
       total_loss = softmax_ce_loss
@@ -161,7 +163,7 @@ class NCRModel(base_model.BaseModel):
     loss_metrics['ncr_loss'] = ncr_loss
     loss_metrics['total_loss'] = total_loss
 
-    return total_loss, loss_metrics
+    return total_loss, loss_metrics  # pytype: disable=bad-return-type  # jax-ndarray
 
   def get_metrics_fn(self, split: Optional[str] = None) -> base_model.MetricFn:
     """Returns a callable metric function for the model.

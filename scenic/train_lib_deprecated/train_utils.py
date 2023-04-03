@@ -1,4 +1,4 @@
-# Copyright 2022 The Scenic Authors.
+# Copyright 2023 The Scenic Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -108,8 +108,8 @@ def initialize_model(
   @functools.partial(jax.jit, backend='cpu')
   def _initialize_model(rngs):
     """Initialization function to be jitted."""
-    init_model_state, init_params = model_def.init(
-        rngs, *dummy_input, train=train, debug=False).pop('params')
+    init_model_state, init_params = flax.core.pop(model_def.init(
+        rngs, *dummy_input, train=train, debug=False), 'params')
     # Set bias in the head to low value, such that loss is small initially.
     if config.get('init_head_bias', None) is not None:
       init_params = flax.core.unfreeze(init_params)
@@ -205,11 +205,11 @@ def initialize_model_with_pytree(
     # If dummy_input is a dict, we feed inputs as keyword arguments, otherwise
     # feed as position arguments.
     if isinstance(dummy_input, dict):
-      init_model_state, init_params = model_def.init(
-          rngs, **dummy_input, train=False, debug=False).pop('params')
+      init_model_state, init_params = flax.core.pop(model_def.init(
+          rngs, **dummy_input, train=False, debug=False), 'params')
     else:
-      init_model_state, init_params = model_def.init(
-          rngs, *dummy_input, train=False, debug=False).pop('params')
+      init_model_state, init_params = flax.core.pop(model_def.init(
+          rngs, *dummy_input, train=False, debug=False), 'params')
     # Set bias in the head to low value, such that loss is small initially.
     if config.get('init_head_bias', None) is not None:
       init_params = flax.core.unfreeze(init_params)
@@ -365,8 +365,8 @@ def initialize_multitask_model(
   @functools.partial(jax.jit, backend='cpu')
   def _initialize_model(rngs):
     """Initialization function to be jitted."""
-    init_model_state, init_params = nn.init(
-        fn=init_fn, module=model_def)(rngs).pop('params')
+    init_model_state, init_params = flax.core.pop(nn.init(
+        fn=init_fn, module=model_def)(rngs), 'params')
     # Set bias in the head to low value, such that loss is small initially.
     if (config.get('init_head_bias', None) is not None and
         'output_projection' in init_params):
@@ -470,7 +470,7 @@ def sync_model_state_across_replicas(train_state: TrainState) -> TrainState:
   """
   # TODO(dehghani): We simply do "mean" here and this doesn't work with
   #   statistics like variance. (check the discussion in Flax for fixing this).
-  if jax.tree_leaves(train_state.model_state):
+  if jax.tree_util.tree_leaves(train_state.model_state):
     # If the model_state is not empty.
     new_model_state = train_state.model_state.copy(
         {'batch_stats': pmap_mean(train_state.model_state['batch_stats'])})
@@ -548,8 +548,8 @@ def accumulate_grads_microbatched(
       del train_cost
       metrics = metrics_fn(mlogits, mbatch)
       # Accumulate gradients and metrics.
-      grad = jax.tree_map(jnp.add, grad_accum, grad)
-      metrics = jax.tree_map(jnp.add, metrics, metrics_acc)
+      grad = jax.tree_util.tree_map(jnp.add, grad_accum, grad)
+      metrics = jax.tree_util.tree_map(jnp.add, metrics, metrics_acc)
       return dropout_rng, grad, metrics
 
     # Initialize gradient accumulation loop state.
@@ -559,7 +559,7 @@ def accumulate_grads_microbatched(
      (model_state,
       init_logits)), grad_init = compute_gradient_fn(params, init_mbatch,
                                                      sub_dropout_rng)
-    if jax.tree_leaves(model_state):
+    if jax.tree_util.tree_leaves(model_state):
       # If the model_state is not empty.
       raise ValueError('Gradient accumulation is not supported when the '
                        'model_state is in used (e.g. models w/ batch norm).')
@@ -697,7 +697,8 @@ def normalize_metrics_summary(metrics_summary: Dict[str, Tuple[float, int]],
   for key, val in metrics_summary.items():
     normalized_metrics_summary[key] = val[0] / (val[1] + 1e-9)
     if np.isnan(normalized_metrics_summary[key]):
-      raise TrainingDivergedError('NaN detected in {}'.format(f'{split}_{key}'))
+      raise TrainingDivergedError(
+          f'NaN detected in {split}_{key} (Unnormalized values: {val})')
 
   return normalized_metrics_summary
 
@@ -717,8 +718,11 @@ def stack_forest(forest: PyTree) -> PyTree:
   Returns:
     a dict of lists.
   """
+  if not forest:
+    return {}
+
   stack_args = lambda *args: np.stack(args)
-  return jax.tree_map(stack_args, *forest)
+  return jax.tree_util.tree_map(stack_args, *forest)
 
 
 def unreplicate_and_get(x: Sequence[PyTree]) -> PyTree:
@@ -747,9 +751,9 @@ def process_and_fetch_to_host(
     # Split minibatch of examples into a list of examples.
     x_list = jnp.split(x, x.shape[0], axis=0)
     # Squeeze out the dummy dimention.
-    return jax.tree_map(lambda x: jnp.squeeze(x, axis=0), x_list)
+    return jax.tree_util.tree_map(lambda x: jnp.squeeze(x, axis=0), x_list)
 
-  pred_or_tgt = jax.tree_map(_split_mini_batchs, pred_or_tgt)
+  pred_or_tgt = jax.tree_util.tree_map(_split_mini_batchs, pred_or_tgt)
 
   if isinstance(pred_or_tgt, list):
     # Pred_or_tgt was a single array, so just return the list:
@@ -757,7 +761,7 @@ def process_and_fetch_to_host(
   else:
     # Pred_or_tgt was dict of arrays, so convert dict of lists to list of dicts:
     keys, values = zip(*pred_or_tgt.items())
-    return [dict(zip(keys, v)) for v in zip(*values)]
+    return [dict(zip(keys, v)) for v in zip(*values)]  # pytype: disable=bad-return-type  # jax-ndarray
 
 
 def get_backbone_multioptimizer(
@@ -825,7 +829,7 @@ def log_eval_summary(step: int,
   eval_metrics = stack_forest(eval_metrics)
 
   # Compute the sum over all examples in all batches.
-  eval_metrics_summary = jax.tree_map(lambda x: x.sum(), eval_metrics)
+  eval_metrics_summary = jax.tree_util.tree_map(lambda x: x.sum(), eval_metrics)
   # Normalize metrics by the total number of exampels.
   metrics_normalizer_fn = metrics_normalizer_fn or normalize_metrics_summary
   eval_metrics_summary = metrics_normalizer_fn(eval_metrics_summary, 'eval')
@@ -887,7 +891,8 @@ def log_train_summary(step: int,
   # Get metrics from devices:
   train_metrics = stack_forest(train_metrics)
   # Compute the sum over all examples in all batches:
-  train_metrics_summary = jax.tree_map(lambda x: x.sum(), train_metrics)
+  train_metrics_summary = jax.tree_util.tree_map(lambda x: x.sum(),
+                                                 train_metrics)
   # Normalize metrics by the total number of exampels:
   metrics_normalizer_fn = metrics_normalizer_fn or normalize_metrics_summary
   train_metrics_summary = metrics_normalizer_fn(train_metrics_summary, 'train')
@@ -1000,3 +1005,7 @@ class Chrono:
     if self.pause_start:
       self.paused_time += time.time() - self.pause_start
       self.pause_start = None
+
+
+def barrier_across_hosts():
+  jax.random.normal(jax.random.PRNGKey(0), ()).block_until_ready()

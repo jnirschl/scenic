@@ -35,9 +35,6 @@ class Model:
   module: nn.Module
   variables: Dict[str, Any]
 
-  def __post_init__(self):
-    self.module = self.module.bind(self.variables)
-
   def __eq__(self, other):
     if isinstance(other, Model):
       return (self.config.init_from.checkpoint_path ==
@@ -87,7 +84,7 @@ class Model:
     """
     image = self.preprocess_image(image)
     out = self._embed_image_jitted(image[None, ...])
-    return jax.tree_map(lambda x: np.array(x[0]), out)
+    return jax.tree_util.tree_map(lambda x: np.array(x[0]), out)
 
   @numpy_cache.lru_cache(maxsize=1000)
   def embed_text_queries(self, queries: Tuple[str, ...]) -> np.ndarray:
@@ -99,7 +96,9 @@ class Model:
     Returns:
       Numpy arrays containing query embeddings.
     """
-    tokenized = np.array([self.module.tokenize(q) for q in queries])
+    tokenized = np.array([
+        self.module.apply(self.variables, q, method=self.module.tokenize)
+        for q in queries])
     # Pad queries to avoid re-compilation:
     n = len(queries)
     num_pad = int(np.ceil(n / QUERY_PAD_BIN_SIZE) * QUERY_PAD_BIN_SIZE) - n
@@ -161,7 +160,7 @@ class Model:
     # Find box with lowest overall similarity:
     best_box_ind = selected_inds[np.argmin(mean_sim)]
 
-    return class_embeddings[best_box_ind], best_box_ind
+    return class_embeddings[best_box_ind], best_box_ind  # pytype: disable=bad-return-type  # jax-ndarray
 
   def get_scores(
       self,
@@ -193,13 +192,21 @@ class Model:
   def _embed_image_jitted(
       self, image: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """Embeds image and returns image features, class embeddings, and boxes."""
-    feature_map = self.module.image_embedder(images=image, train=False)
+    feature_map = self.module.apply(
+        self.variables,
+        images=image,
+        train=False,
+        method=self.module.image_embedder)
     b, _, _, c = feature_map.shape
     features = jnp.reshape(feature_map, (b, -1, c))
-    pred_boxes = self.module.box_predictor(features, feature_map)['pred_boxes']
-    class_embeddings = self.module.class_predictor(
+    pred_boxes = self.module.apply(
+        self.variables, features, feature_map,
+        method=self.module.box_predictor)['pred_boxes']
+    class_embeddings = self.module.apply(
+        self.variables,
         image_features=features,
-        query_embeddings=None)['class_embeddings']
+        query_embeddings=None,
+        method=self.module.class_predictor)['class_embeddings']
     return features, class_embeddings, pred_boxes
 
   @functools.partial(jax.jit, static_argnums=(0,))
@@ -208,9 +215,15 @@ class Model:
       image_features: jnp.ndarray,
       query_embeddings: jnp.ndarray,
   ) -> Dict[str, jnp.ndarray]:
-    return self.module.class_predictor(
-        image_features=image_features, query_embeddings=query_embeddings)
+    return self.module.apply(
+        self.variables,
+        image_features=image_features,
+        query_embeddings=query_embeddings,
+        method=self.module.class_predictor)
 
   @functools.partial(jax.jit, static_argnums=(0,))
   def _embed_texts_jitted(self, queries: jnp.ndarray) -> jnp.ndarray:
-    return self.module.text_embedder(text_queries=queries, train=False)
+    return self.module.apply(self.variables,
+                             text_queries=queries,
+                             train=False,
+                             method=self.module.text_embedder)

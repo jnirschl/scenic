@@ -1,4 +1,4 @@
-# Copyright 2022 The Scenic Authors.
+# Copyright 2023 The Scenic Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -118,6 +118,20 @@ def get_decode(channels=3):
   return _decode
 
 
+@Registry.register("preprocess_ops.decode_grayscale", "function")
+@utils.InKeyOutKey()
+def get_decode_grayscale(channels=1):
+  """Decode an encoded image string, see tf.io.decode_image."""
+
+  def _decode_gray(image):  # pylint: disable=missing-docstring
+    # tf.io.decode_image does not set the shape correctly, so we use
+    # tf.io.deocde_jpeg, which also works for png, see
+    # https://github.com/tensorflow/tensorflow/issues/8551
+    return tf.io.decode_jpeg(image, channels=channels)
+
+  return _decode_gray
+
+
 @Registry.register("preprocess_ops.pad", "function")
 @utils.InKeyOutKey()
 @utils.BatchedImagePreprocessing()
@@ -145,13 +159,14 @@ def get_pad(pad_size):
 @Registry.register("preprocess_ops.resize", "function")
 @utils.InKeyOutKey()
 @utils.BatchedImagePreprocessing()
-def get_resize(resize_size):
+def get_resize(resize_size, method=tf2.image.ResizeMethod.BILINEAR):
   """Resizes image to a given size.
 
   Args:
     resize_size: either an integer H, where H is both the new height and width
       of the resized image, or a list or tuple [H, W] of integers, where H and W
       are new image"s height and width respectively.
+    method: The type of interpolation to apply when resizing.
 
   Returns:
     A function for resizing an image.
@@ -166,7 +181,7 @@ def get_resize(resize_size):
     # In particular it was not equivariant with rotation and lead to the network
     # to learn a shortcut in self-supervised rotation task, if rotation was
     # applied after resize.
-    return tf.cast(tf2.image.resize(image, resize_size), image.dtype)
+    return tf.cast(tf2.image.resize(image, resize_size, method), image.dtype)
 
   return _resize
 
@@ -174,15 +189,18 @@ def get_resize(resize_size):
 @Registry.register("preprocess_ops.resize_small", "function")
 @utils.InKeyOutKey()
 @utils.BatchedImagePreprocessing()
-def get_resize_small(smaller_size):
+def get_resize_small(smaller_size, method="area", antialias=True):
   """Resizes the smaller side to `smaller_size` keeping aspect ratio.
 
   Args:
     smaller_size: an integer, that represents a new size of the smaller side of
       an input image.
+    method: the resize method. `area` is a meaningful, bwd-compat default.
+    antialias: See TF's image.resize method.
 
   Returns:
     A function, that resizes an image and preserves its aspect ratio.
+
   """
 
   def _resize_small(image):  # pylint: disable=missing-docstring
@@ -195,7 +213,9 @@ def get_resize_small(smaller_size):
     h = tf.cast(tf.round(tf.cast(h, tf.float32) * ratio), tf.int32)
     w = tf.cast(tf.round(tf.cast(w, tf.float32) * ratio), tf.int32)
 
-    return tf.image.resize_area(image[None], [h, w])[0]
+    dtype = image.dtype
+    image = tf2.image.resize(image, (h, w), method, antialias)
+    return tf.cast(image, dtype)
 
   return _resize_small
 
@@ -203,7 +223,8 @@ def get_resize_small(smaller_size):
 @Registry.register("preprocess_ops.inception_crop", "function")
 @utils.InKeyOutKey()
 @utils.BatchedImagePreprocessing()
-def get_inception_crop(resize_size=None, area_min=5, area_max=100):
+def get_inception_crop(resize_size=None, area_min=5, area_max=100,
+                       resize_method=tf2.image.ResizeMethod.BILINEAR):
   """Makes inception-style image crop.
 
   Inception-style crop is a random image crop (its size and aspect ratio are
@@ -214,6 +235,8 @@ def get_inception_crop(resize_size=None, area_min=5, area_max=100):
     resize_size: Resize image to [resize_size, resize_size] after crop.
     area_min: minimal crop area.
     area_max: maximal crop area.
+    resize_method: The type of interpolation to apply when resizing. Valid
+      values those accepted by tf.image.resize.
 
   Returns:
     A function, that applies inception crop.
@@ -231,7 +254,8 @@ def get_inception_crop(resize_size=None, area_min=5, area_max=100):
     # to restore it the manual way.
     crop.set_shape([None, None, image.shape[-1]])
     if resize_size:
-      crop = get_resize([resize_size, resize_size])({"image": crop})["image"]
+      crop = get_resize([resize_size, resize_size], resize_method)(
+          {"image": crop})["image"]
     return crop
 
   return _inception_crop
@@ -239,9 +263,11 @@ def get_inception_crop(resize_size=None, area_min=5, area_max=100):
 
 @Registry.register("preprocess_ops.decode_jpeg_and_inception_crop", "function")
 @utils.InKeyOutKey()
-def get_decode_jpeg_and_inception_crop(resize_size=None,
-                                       area_min=5,
-                                       area_max=100):
+def get_decode_jpeg_and_inception_crop(
+    resize_size=None,
+    area_min=5,
+    area_max=100,
+    resize_method=tf2.image.ResizeMethod.BILINEAR):
   """Decode jpeg string and make inception-style image crop.
 
   Inception-style crop is a random image crop (its size and aspect ratio are
@@ -252,6 +278,8 @@ def get_decode_jpeg_and_inception_crop(resize_size=None,
     resize_size: Resize image to [resize_size, resize_size] after crop.
     area_min: minimal crop area.
     area_max: maximal crop area.
+    resize_method: The type of interpolation to apply when resizing. Valid
+      values those accepted by tf.image.resize.
 
   Returns:
     A function, that applies inception crop.
@@ -273,7 +301,8 @@ def get_decode_jpeg_and_inception_crop(resize_size=None,
     image = tf.image.decode_and_crop_jpeg(image_data, crop_window, channels=3)
 
     if resize_size:
-      image = get_resize([resize_size, resize_size])({"image": image})["image"]
+      image = get_resize([resize_size, resize_size], resize_method)(
+          {"image": image})["image"]
 
     return image
 

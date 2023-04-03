@@ -1,4 +1,4 @@
-# Copyright 2022 The Scenic Authors.
+# Copyright 2023 The Scenic Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -435,10 +435,10 @@ class Conv(nn.Conv):
   use_bias: bool = True
   dtype: jnp.dtype = jnp.float32
   precision: Optional[jax.lax.Precision] = None
-  kernel_init: Callable[
-      [Any, Iterable[int], Any], Any] = nn.linear.default_kernel_init
+  kernel_init: Callable[  # pytype: disable=annotation-type-mismatch  # jax-types
+      [Any, Sequence[int], Any], Any] = nn.linear.default_kernel_init
   bias_init: Callable[
-      [Any, Iterable[int], Any], Any] = nn.initializers.zeros
+      [Any, Sequence[int], Any], Any] = nn.initializers.zeros
 
   @nn.compact
   def __call__(

@@ -1,4 +1,4 @@
-# Copyright 2022 The Scenic Authors.
+# Copyright 2023 The Scenic Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -63,7 +63,7 @@ class InstallCommand(install.install):
 install_requires_projects = [
     "ott-jax>=0.2.0",
     "sklearn",
-    "lingvo==0.11.0",
+    "lingvo==0.12.6",
     "seaborn>=0.11.2",
     "dmvr @ git+https://github.com/deepmind/dmvr.git",
 ]
@@ -71,8 +71,8 @@ install_requires_projects = [
 install_requires_core = [
     "absl-py>=1.0.0",
     "numpy>=1.12",
-    "jax>=0.2.21",
-    "jaxlib>=0.1.74",
+    "jax>=0.4.3",
+    "jaxlib>=0.4.3",
     "flax>=0.4.0",
     "ml-collections>=0.1.1",
     "tensorflow>=2.7",
@@ -80,9 +80,7 @@ install_requires_core = [
     "immutabledict>=2.2.1",
     "clu>=0.0.6",
     "tensorflow-datasets",
-    "tf-models-official",
-    # Specifying the tf_nightly version avoids slow (hours) pip install:
-    "tf_nightly==2.9.0.dev20220401",
+    "optax @ git+https://github.com/deepmind/optax.git@master",
 ]
 
 tests_require = [

@@ -1,4 +1,4 @@
-# Copyright 2022 The Scenic Authors.
+# Copyright 2023 The Scenic Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
 
 """Utility functions for using pretrained models."""
 
-import collections
+from collections import abc
 import os
 import re
 from typing import Any, Dict, Mapping, List, Optional, Union, Tuple
@@ -47,7 +47,10 @@ def get_params_and_model_state_dict(
     A tuple of restored params and restored models state. Note that these are
     not frozen, and need to be frozen before passing them to the optimizer.
   """
-  restored_params = restored_train_state['optimizer']['target']
+  if 'optimizer' in restored_train_state:
+    restored_params = restored_train_state['optimizer']['target']
+  else:
+    restored_params = restored_train_state['params']
   restored_model_state = restored_train_state.get('model_state')
   if 'params' in restored_params:  # Backward compatibility.
     restored_params = restored_params['params']
@@ -319,7 +322,7 @@ def convert_strict_big_vision_to_scenic_checkpoint(
       'opt': train_state.optimizer,
       'extra': dict(accum_train_time=0.0)
   }
-  _, checkpoint_tree = jax.tree_flatten(checkpoint_tree)
+  _, checkpoint_tree = jax.tree_util.tree_flatten(checkpoint_tree)
   checkpoint = load_big_vision_checkpoint(checkpoint_tree, checkpoint_path)
   logging.info('Loaded big_vision checkpoint from %s', checkpoint_path)
 
@@ -356,7 +359,7 @@ def inspect_params(*,
     items = []
     for k, v in d.items():
       path = parent_key + sep + k if parent_key else k
-      if isinstance(v, collections.MutableMapping):
+      if isinstance(v, abc.MutableMapping):
         items.extend(_flatten_params(v, path, sep=sep).items())
       else:
         items.append((path, v))
@@ -385,6 +388,8 @@ def inspect_params(*,
         is_shape_mismatch = True
         logging.warning('Key: %s. Expected shape: %s. Restored shape: %s', key,
                         expected_flat[key].shape, restored_flat[key].shape)
+      else:
+        logging.info('Key found with matching shape: %s', key)
 
   # Adds back empty dict explicitly, to support layers without weights.
   # Context: FLAX ignores empty dict during serialization.

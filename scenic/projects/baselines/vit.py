@@ -1,6 +1,6 @@
 """Vision Transformer."""
 
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Callable, Optional, Sequence
 
 from absl import logging
 import flax
@@ -15,7 +15,7 @@ from scenic.model_lib.layers import nn_layers
 import scipy
 from tensorflow.io import gfile
 
-Initializer = Callable[[jnp.ndarray, Iterable[int], jnp.dtype], jnp.ndarray]
+Initializer = Callable[[jnp.ndarray, Sequence[int], jnp.dtype], jnp.ndarray]
 
 
 class AddPositionEmbs(nn.Module):
@@ -38,6 +38,31 @@ class AddPositionEmbs(nn.Module):
     pe = self.param('pos_embedding', self.posemb_init, pos_emb_shape,
                     inputs.dtype)
     return inputs + pe
+
+
+class MAPHead(nn.Module):
+  """Multihead Attention Pooling."""
+  mlp_dim: Optional[int] = None  # Defaults to 4x input dim
+  num_heads: int = 12
+  dtype: Any = jnp.float32
+
+  @nn.compact
+  def __call__(self, x):
+    n, _, d = x.shape
+    probe = self.param('probe', nn.initializers.xavier_uniform(), (1, 1, d),
+                       x.dtype)
+    probe = jnp.tile(probe, [n, 1, 1])
+
+    x = nn.MultiHeadDotProductAttention(
+        num_heads=self.num_heads, kernel_init=nn.initializers.xavier_uniform()
+    )(probe, x)
+
+    y = nn.LayerNorm()(x)
+    x = x + attention_layers.MlpBlock(
+        mlp_dim=self.mlp_dim,
+        dtype=self.dtype,
+        dropout_rate=0.0)(y, deterministic=True)
+    return x[:, 0]
 
 
 class Encoder1DBlock(nn.Module):
@@ -253,6 +278,9 @@ class ViT(nn.Module):
     elif self.classifier in ('gap', 'gmp', 'gsp'):
       fn = {'gap': jnp.mean, 'gmp': jnp.max, 'gsp': jnp.sum}[self.classifier]
       x = fn(x, axis=1)
+    elif self.classifier == 'map':
+      x = MAPHead(
+          num_heads=self.num_heads, mlp_dim=self.mlp_dim, dtype=self.dtype)(x)
     else:
       raise ValueError(f'Unknown classifier {self.classifier}')
 

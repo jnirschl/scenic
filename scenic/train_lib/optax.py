@@ -1,4 +1,4 @@
-# Copyright 2022 The Scenic Authors.
+# Copyright 2023 The Scenic Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,11 +23,28 @@ from typing import Any, Optional, Sequence, Tuple, Union, Callable, List
 
 from absl import logging
 import jax
+import jax.numpy as jnp
 import ml_collections
 import numpy as np
 import optax
 from scenic.train_lib import lr_schedules
 from scenic.train_lib import optimizers
+
+
+def find_states(opt_state, cls):
+  leaves = jax.tree_util.tree_leaves(
+      opt_state, is_leaf=lambda node: isinstance(node, cls))
+  return [leaf for leaf in leaves if isinstance(leaf, cls)]
+
+
+def get_step(opt_state):
+  """Returns `ScaleByScheduleState.count` from `opt_state` as an integer."""
+  counts = {
+      int(state.count)
+      for state in find_states(opt_state, optax.ScaleByScheduleState)
+  }
+  assert len(counts) == 1, f'Expected exactly 1 ScaleByScheduleState: {counts}'
+  return next(iter(counts))
 
 
 def _make_mask_trees(
@@ -47,8 +64,12 @@ def _make_mask_trees(
   else:
     patterns, names, values = [], [], []
 
-  masks = make_mask_trees(params, list(zip(patterns, names)),
-                          allow_unmatched=allow_unmatched, log=log)
+  masks = make_mask_trees(
+      params,
+      list(zip(patterns, names, values)),
+      allow_unmatched=allow_unmatched,
+      log=log,
+  )
   return masks, list(zip(names, values))
 
 
@@ -68,17 +89,17 @@ def _split_frozen(masks, scheds):
 
 def make_mask_trees(
     tree,
-    patterns_names: Sequence[Tuple[str, Optional[str]]],
+    patterns_names: Sequence[Tuple[str, Optional[str], float]],
     *,
     allow_unmatched: bool = False,
-    log: Optional[str] = None):
+    log: Optional[str] = None,
+):
   """Returns a boolean mask tree for every pattern (only first match)."""
 
-  patterns, _ = zip(*patterns_names)
+  patterns, _, _ = zip(*patterns_names)
   compiled_patterns = list(map(re.compile, patterns))
 
   def matchfirst(_, name):
-    matches = []
     matches = [bool(pattern.fullmatch(name)) for pattern in compiled_patterns]
 
     matched = sum(map(int, matches))
@@ -120,8 +141,8 @@ def replace_frozen(schedule, pytree, replacement, log: Optional[str] = None):
 def make_schedule(
     schedule: Optional[ml_collections.ConfigDict] = None,
     get_learning_rate_fn: Callable[
-        [ml_collections.ConfigDict], optax.ScalarOrSchedule
-        ] = lr_schedules.get_learning_rate_fn,
+        [ml_collections.ConfigDict],
+        optax.ScalarOrSchedule] = lr_schedules.get_learning_rate_fn,
 ) -> List[Tuple[str, str, Tuple[optax.ScalarOrSchedule, float]]]:
   """Creates a schedule dictionary compatible with the `make` function."""
   # Global schedule. No schedule means frozen.
@@ -134,12 +155,12 @@ def make_schedule(
   def create_schedule(lr_configs):
     fn = get_learning_rate_fn(
         ml_collections.ConfigDict({'lr_configs': lr_configs}))
-
     # Base LR is used for decoupling WD from LR schedules.
     base_lr = 1.0
     if lr_configs is not None:
       base_lr = lr_configs.get('base_learning_rate', 1.0)
     return fn, base_lr
+
   schedule = [(re, name, create_schedule(lr_configs))
               for re, name, lr_configs in schedule]
   return schedule
@@ -155,7 +176,7 @@ def make(config: ml_collections.ConfigDict,
     config: Optimizer config.
     schedule: Learning rate schedules as tuple of regexp, name, learning rate
       schedule function and base learning rate (for WD decoupling).
-    params: Model paramters.
+    params: Model parameters.
   """
 
   masks, scheds = _make_mask_trees(params, schedule, log='schedule')
@@ -206,7 +227,7 @@ def make(config: ml_collections.ConfigDict,
     grad_clip_norm_tx = []
 
   # Optimizer updates.
-  tx_func = getattr(optax, config.optax_name)
+  tx_func = operator.attrgetter(config.optax_name)(optax)
   opt_txs = [optax.masked(
       tx_func(**config.get('optax_configs', {})), not_frozen_mask)]
 
@@ -232,19 +253,20 @@ def make(config: ml_collections.ConfigDict,
     for (mult, decay_mask), (mask, base_lr) in itertools.product(
         zip(mults, decay_masks), zip(masks, schedule_base_lr)):
       weight_decay_txs.append(
-          optax.additive_weight_decay(
-              mult / base_lr,  # Decouple WD from LR.
-              jax.tree_map(lambda a, b: a and b, decay_mask, mask)))
+          optax.add_decayed_weights(
+              mult / base_lr if base_lr else 0.0,  # Decouple WD from LR.
+              jax.tree_util.tree_map(lambda a, b: a and b, decay_mask, mask)))
   else:
     weight_decay_txs = []
 
   # Combine gradient updates and learning rate schedules.
-  return optax.chain(
+  opt = optax.chain(
       *grad_clip_norm_tx,
       *opt_txs,
       *weight_decay_txs,
       *schedule_txs,
-      optax.scale(-1.0)), schedule_fns
+      optax.scale(-1.0))
+  return opt, schedule_fns
 
 
 def aggregate_gradients_pmean(
@@ -268,3 +290,49 @@ def aggregate_gradients_pmean(
     return jax.lax.pmean(updates, axis_name=axis_name), None
 
   return optax.GradientTransformation(init_fn, update_fn)
+
+################# Scenic optimizers ##############################
+# This is following the BV codebase pattern for defining a custom optimizer.
+# A dummy object to allow for foo.bar access syntax, see
+# https://stackoverflow.com/a/19476841/2366315
+optax.scenic = type('', (), {})()
+
+
+def scale_by_adafactor(min_dim_size_to_factor=32,
+                       decay_rate=0.8, decay_offset=0,
+                       beta2_cap=0.999,
+                       clipping_threshold=None,
+                       momentum=0.9, dtype_momentum=jnp.bfloat16,
+                       eps=1e-30):
+  """The BigVision variant of Adafactor optimizer."""
+
+  def _decay_rate_pow(i, exponent):
+    """Second-order moment decay schedule."""
+    t = jnp.array(i, jnp.float32) + 1.0
+    return jnp.minimum(beta2_cap, 1.0 - t**(-exponent))
+
+  scale_by_rms = optax.scale_by_factored_rms(
+      factored=True,
+      decay_rate=decay_rate,
+      step_offset=decay_offset,
+      min_dim_size_to_factor=min_dim_size_to_factor,
+      epsilon=eps,
+      decay_rate_fn=_decay_rate_pow)
+
+  clip = (optax.clip_by_block_rms(clipping_threshold) if clipping_threshold
+          else optax.identity())
+
+  mom = (optax.ema(momentum, debias=False, accumulator_dtype=dtype_momentum)
+         if momentum else optax.identity())
+
+  return optax.chain(scale_by_rms, clip, mom)
+
+optax.scenic.scale_by_adafactor = scale_by_adafactor  # pytype: disable=module-attr
+
+
+def momentum_hp(momentum=0.9, dtype=jnp.bfloat16, nesterov=False):
+  """SGD-Momentum with half-precision accumulator."""
+  return optax.trace(decay=momentum, accumulator_dtype=dtype, nesterov=nesterov)
+
+
+optax.scenic.momentum_hp = momentum_hp  # pytype: disable=module-attr

@@ -103,7 +103,7 @@ def modelnet40_load_split(batch_size,
       dataset_config.dataset_name,
       split=split,
       data_dir=dataset_config.dataset_path,
-      feature_key='pc')
+      skip_decode=('pc',))
   # Download dataset:
   dataset_builder.download_and_prepare()
 
@@ -124,9 +124,6 @@ def modelnet40_load_split(batch_size,
   # decode_example should be applied after caching as it also does augmentation
   ds = ds.map(decode_example, num_parallel_calls=tf.data.experimental.AUTOTUNE)
   ds = ds.batch(batch_size, drop_remainder=train)
-
-  if not train:
-    ds = ds.repeat()
 
   ds = ds.prefetch(prefetch_buffer_size)
   return ds

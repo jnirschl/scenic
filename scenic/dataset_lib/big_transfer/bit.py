@@ -1,4 +1,4 @@
-# Copyright 2022 The Scenic Authors.
+# Copyright 2023 The Scenic Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -48,7 +48,6 @@ def get_dataset(*,
                 batch_size,
                 eval_batch_size,
                 num_shards,
-                cache='loaded',
                 dtype_str='float32',
                 shuffle_seed=0,
                 rng=None,
@@ -60,8 +59,6 @@ def get_dataset(*,
     batch_size: int; Determines the train batch size.
     eval_batch_size: int; Determines the evaluation batch size.
     num_shards: int;  Number of shards --> batch shape: [num_shards, bs, ...].
-    cache: str; Whether to cache training data. None: no caching. 'loaded':
-      cache right after loading a datapoint. 'batched': cache whole batches.
     dtype_str: Data type of the image (e.g. 'float32').
     shuffle_seed: int; Seed for shuffling the training data. Not used.
     rng: JAX rng key, which can be used for augmentation, shuffling, etc.
@@ -89,6 +86,9 @@ def get_dataset(*,
   shuffle_buffer_size = (1000 if num_shards == 1 else
                          dataset_configs.shuffle_buffer_size)
 
+  # Whether to cache training data. None: no caching. 'loaded':
+  # cache right after loading a datapoint. 'batched': cache whole batches.
+  cache = dataset_configs.get('cache', 'loaded')
   train_ds = dataset_utils.get_data(
       dataset=dataset_configs.dataset,
       split=dataset_configs.train_split,
@@ -132,11 +132,11 @@ def get_dataset(*,
   maybe_pad_batches_eval = functools.partial(
       dataset_utils.maybe_pad_batch, train=False, batch_size=eval_batch_size)
 
-  def _get_eval_iter(dataset, split, pp_eval):
+  def _get_eval_iter(dataset, split, pp_eval, dataset_dir):
     val_ds = dataset_utils.get_data(
         dataset=dataset,
         split=split,
-        data_dir=dataset_configs.get('dataset_dir'),
+        data_dir=dataset_dir,
         batch_size=eval_batch_size,
         preprocess_fn=functools.partial(pp_fn, how=pp_eval),
         cache='batched',
@@ -159,7 +159,8 @@ def get_dataset(*,
   if isinstance(dataset_configs.val_split, str):
     valid_iter = _get_eval_iter(dataset_configs.dataset,
                                 dataset_configs.val_split,
-                                dataset_configs.pp_eval)
+                                dataset_configs.pp_eval,
+                                dataset_configs.get('dataset_dir'))
     n_eval_ex = _get_num_eval_examples(
         dataset_configs.dataset,
         dataset_configs.val_split,
@@ -167,10 +168,16 @@ def get_dataset(*,
   else:
     valid_iter, n_eval_ex = {}, {}
     for eval_spec in dataset_configs.val_split:
-      name, dataset, split, pp_eval = eval_spec
-      valid_iter[name] = _get_eval_iter(dataset, split, pp_eval)
+      if len(eval_spec) == 4:
+        name, dataset, split, pp_eval = eval_spec
+        dataset_dir = dataset_configs.get('dataset_dir')
+      elif len(eval_spec) == 5:
+        name, dataset, split, pp_eval, dataset_dir = eval_spec
+      else:
+        raise ValueError(f'Unknown eval_spec {eval_spec}')
+      valid_iter[name] = _get_eval_iter(dataset, split, pp_eval, dataset_dir)
       n_eval_ex[name] = _get_num_eval_examples(
-          dataset, split, data_dir=dataset_configs.get('dataset_dir'))
+          dataset, split, data_dir=dataset_dir)
 
   input_shape = (-1,) + tuple(train_ds.element_spec['inputs'].shape[1:])
 

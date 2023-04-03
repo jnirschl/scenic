@@ -4,10 +4,10 @@ r"""Default configs for ViT on structural variant classification using pileups.
 """
 
 import ml_collections
-from scenic.projects.svvit.google import dataset_meta_data
+
 
 _TRAIN_SIZE = 30_000 * 18
-VARIANT = 'Ti/4'
+VERSION = 'Ti'
 
 HIDDEN_SIZE = {'Ti': 192, 'S': 384, 'B': 768, 'L': 1024, 'H': 1280}
 NUM_HEADS = {'Ti': 3, 'S': 6, 'B': 12, 'L': 16, 'H': 16}
@@ -32,15 +32,14 @@ def get_config(runlocal=''):
   config.dataset_configs.test_path = ''
 
   # Model.
-  version, patch = VARIANT.split('/')
   config.model_name = 'vit_classification'
   config.model = ml_collections.ConfigDict()
-  config.model.hidden_size = HIDDEN_SIZE[version]
+  config.model.hidden_size = HIDDEN_SIZE[VERSION]
   config.model.patches = ml_collections.ConfigDict()
-  config.model.patches.size = [int(patch), int(patch)]
-  config.model.num_heads = NUM_HEADS[version]
-  config.model.mlp_dim = MLP_DIM[version]
-  config.model.num_layers = NUM_LAYERS[version]
+  config.model.patches.size = [1, 256]
+  config.model.num_heads = NUM_HEADS[VERSION]
+  config.model.mlp_dim = MLP_DIM[VERSION]
+  config.model.num_layers = NUM_LAYERS[VERSION]
   config.model.representation_size = None
   config.model.classifier = 'token'
   config.model.attention_dropout_rate = 0.
@@ -99,45 +98,3 @@ def get_config(runlocal=''):
   return config
 
 
-def get_hyper(hyper):
-  """Defines the hyper-parameters sweeps for doing grid search."""
-  # Dataset related hyper parameters.
-  dataset_names = hyper.sweep('config.dataset_name', [
-      'pileup_window',
-  ])
-  train_paths = hyper.sweep('config.dataset_configs.train_path', [
-      dataset_meta_data.DATASET_PATHS['ref_right']['del']['single']
-      ['hgsvc2_train'],
-  ])
-  eval_paths = hyper.sweep('config.dataset_configs.eval_path', [
-      dataset_meta_data.DATASET_PATHS['ref_right']['del']['single']
-      ['hgsvc2_test'],
-  ])
-  dataset_domains = hyper.zipit([dataset_names, train_paths, eval_paths])
-
-  # Model related hyper parameters.
-  hidden_size = hyper.sweep('config.model.hidden_size', [
-      HIDDEN_SIZE['Ti'],
-      HIDDEN_SIZE['S'],
-      HIDDEN_SIZE['B'],
-  ])
-  num_heads = hyper.sweep('config.model.num_heads', [
-      NUM_HEADS['Ti'],
-      NUM_HEADS['S'],
-      NUM_HEADS['B'],
-  ])
-  mlp_dim = hyper.sweep('config.model.mlp_dim', [
-      MLP_DIM['Ti'],
-      MLP_DIM['S'],
-      MLP_DIM['B'],
-  ])
-  num_layers = hyper.sweep('config.model.num_layers', [
-      NUM_LAYERS['Ti'],
-      NUM_LAYERS['S'],
-      NUM_LAYERS['B'],
-  ])
-
-  batch_size = hyper.sweep('config.batch_size', [512, 512, 256])
-  model_domains = hyper.zipit([hidden_size, num_heads, mlp_dim, num_layers, batch_size])
-
-  return hyper.product([model_domains, dataset_domains])

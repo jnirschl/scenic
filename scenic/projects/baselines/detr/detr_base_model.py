@@ -113,7 +113,7 @@ def compute_cost(
       jnp.max(mask, axis=1),
       jnp.expand_dims(jnp.arange(1, max_num_boxes + 1), axis=0), 0)
   n_cols = jnp.max(n_cols, axis=1)
-  return cost, n_cols
+  return cost, n_cols  # pytype: disable=bad-return-type  # jax-ndarray
 
 
 class BaseModelWithMatching(base_model.BaseModel):  # pytype: disable=ignored-abstractmethod  # abcmeta-check
@@ -138,7 +138,8 @@ class BaseModelWithMatching(base_model.BaseModel):  # pytype: disable=ignored-ab
       self.loss_terms_weights = {'loss_class': config.class_loss_coef}
     super().__init__(config, dataset_meta_data)
 
-  @abc.abstractproperty
+  @property
+  @abc.abstractmethod
   def loss_and_metrics_map(
       self) -> Dict[str, Callable[..., Tuple[ArrayDict, MetricsDict]]]:
     """Returns a dict that lists all losses for this model."""
@@ -375,9 +376,9 @@ class BaseModelWithMatching(base_model.BaseModel):  # pytype: disable=ignored-ab
         logits_normalized=True)
 
     if label_weights is not None:
-      denom = (tgt_labels_onehot * label_weights).sum(axis=[1, 2])
+      denom = (tgt_labels_onehot * label_weights).sum(axis=[1, 2])  # pytype: disable=wrong-arg-types  # jax-ndarray
     else:  # Normalize by number of boxes after removing padding label.
-      denom = tgt_labels_onehot[..., 1:].sum(axis=[1, 2])
+      denom = tgt_labels_onehot[..., 1:].sum(axis=[1, 2])  # pytype: disable=wrong-arg-types  # jax-ndarray
 
     if batch_weights is not None:
       denom *= batch_weights
@@ -391,7 +392,7 @@ class BaseModelWithMatching(base_model.BaseModel):  # pytype: disable=ignored-ab
     assert loss in self.loss_and_metrics_map, f'Unknown loss {loss}.'
     return self.loss_and_metrics_map[loss](outputs, batch, indices, **kwargs)
 
-  def loss_function(
+  def loss_function(  # pytype: disable=signature-mismatch  # overriding-return-type-checks
       self,
       outputs: ArrayDict,
       batch: ArrayDict,
@@ -444,7 +445,7 @@ class BaseModelWithMatching(base_model.BaseModel):  # pytype: disable=ignored-ab
 
     if matches is None:
       if 'cost' not in outputs:
-        cost, n_cols = self.compute_cost_matrix(outputs, batch['label'])
+        cost, n_cols = self.compute_cost_matrix(outputs, batch['label'])  # pytype: disable=wrong-arg-types  # jax-ndarray
       else:
         cost, n_cols = outputs['cost'], outputs.get('cost_n_cols')
       matches = self.matcher(cost, n_cols)
@@ -452,7 +453,7 @@ class BaseModelWithMatching(base_model.BaseModel):  # pytype: disable=ignored-ab
         matches = [matches]
         for aux_pred in outputs['aux_outputs']:
           if 'cost' not in outputs:
-            cost, n_cols = self.compute_cost_matrix(aux_pred, batch['label'])
+            cost, n_cols = self.compute_cost_matrix(aux_pred, batch['label'])  # pytype: disable=wrong-arg-types  # jax-ndarray
           else:
             cost, n_cols = aux_pred['cost'], outputs.get('cost_n_cols')
           matches.append(self.matcher(cost, n_cols))
@@ -528,7 +529,7 @@ class BaseModelWithMatching(base_model.BaseModel):  # pytype: disable=ignored-ab
     # Process metrics dictionary to generate final unnormalized metrics.
     metrics = self.get_metrics(metrics_dict)
     metrics['total_loss'] = (total_loss, 1)
-    return total_loss, metrics
+    return total_loss, metrics  # pytype: disable=bad-return-type  # jax-ndarray
 
   def get_metrics(self, metrics_dict: MetricsDict) -> MetricsDict:
     """Arrange loss dictionary into a metrics dictionary."""
@@ -713,5 +714,5 @@ class ObjectDetectionWithMatchingModel(BaseModelWithMatching):
 
     # Sum metrics and normalizers over all replicas.
     for k, v in metrics.items():
-      metrics[k] = model_utils.psum_metric_normalizer(v)
-    return losses, metrics
+      metrics[k] = model_utils.psum_metric_normalizer(v)  # pytype: disable=wrong-arg-types  # jax-ndarray
+    return losses, metrics  # pytype: disable=bad-return-type  # jax-ndarray

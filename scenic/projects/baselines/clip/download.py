@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import tempfile
 from typing import Optional
 import urllib
 
@@ -52,7 +53,8 @@ def download(
       logging.warning('%s exists, but the SHA256 checksum does not match;'
                       're-downloading the file', download_target)
 
-  with gfile.GFile(download_target, 'wb') as output:
+  temp_file = tempfile.NamedTemporaryFile(delete=False).name
+  with gfile.GFile(temp_file, 'wb') as output:
     with urllib.request.urlopen(url) as source:
       loop = tqdm.tqdm(total=int(source.info().get('Content-Length')),
                        ncols=80, unit='iB', unit_scale=True, unit_divisor=1024)
@@ -64,8 +66,13 @@ def download(
         output.write(buffer)
         loop.update(len(buffer))
 
-  if expected_sha256 and hash_file(download_target) != expected_sha256:
+  if expected_sha256 and hash_file(temp_file) != expected_sha256:
     raise RuntimeError(
         'Model has been downloaded but the SHA256 checksum does not not match')
+
+  # Use copy+remove instead of rename in case source and target are on different
+  # file systems:
+  gfile.copy(temp_file, download_target, overwrite=True)
+  gfile.remove(temp_file)
 
   return download_target

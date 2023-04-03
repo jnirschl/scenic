@@ -1,4 +1,4 @@
-# Copyright 2022 The Scenic Authors.
+# Copyright 2023 The Scenic Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
 
 """Utilities for logging, debugging, profiling, testing, and visualization."""
 
-import collections
+from collections import abc
 from concurrent import futures
 import json
 import operator
@@ -79,7 +79,9 @@ def input_spec_to_jax_shape_dtype_struct(
     batch_size: Optional[int] = None) -> jax.ShapeDtypeStruct:
   """Parse an input specs into a jax.ShapeDtypeStruct."""
   spec = tuple(spec)
-  if len(spec) == 2 and isinstance(spec[0], collections.abc.Iterable):
+  if batch_size and len(spec) == 1:
+    raise ValueError('batch_size unsupported when len(spec) is 1.')
+  if len(spec) == 2 and isinstance(spec[0], abc.Iterable):
     shape = (batch_size,) + tuple(spec[0][1:]) if batch_size else spec[0]
     dtype = spec[1]
   else:
@@ -117,10 +119,7 @@ def compute_flops(flax_model_apply_fn: Callable[[jnp.ndarray], Any],
     else:
       dummy_input.append(None)
 
-  m = jax.xla_computation(flax_model_apply_fn)(*dummy_input).as_hlo_module()
-  client = jax.lib.xla_bridge.get_backend()
-  analysis = jax.lib.xla_client._xla.hlo_module_cost_analysis(client, m)  # pylint: disable=protected-access
-
+  analysis = jax.jit(flax_model_apply_fn).lower(*dummy_input).cost_analysis()
   flops = analysis['flops']
   if fuse_multiply_add:
     flops = flops / 2
@@ -150,7 +149,7 @@ def compute_flops_with_pytree(flax_model_apply_fn: Callable[[jnp.ndarray], Any],
   """
 
   def check_leaf_spec(spec: Sequence[PyTree]) -> bool:
-    return ((len(spec) == 2 and isinstance(spec[0], collections.Sequence) and
+    return ((len(spec) == 2 and isinstance(spec[0], abc.Sequence) and
              all(isinstance(i, int) for i in spec[0]) and
              isinstance(spec[1], jnp.dtype)) or
             (all(isinstance(i, int) for i in spec[0])))
@@ -158,7 +157,7 @@ def compute_flops_with_pytree(flax_model_apply_fn: Callable[[jnp.ndarray], Any],
   def create_dummy_input(spec: PyTree) -> PyTree:
     if isinstance(spec, dict):
       return {k: create_dummy_input(v) for k, v in spec.items()}
-    elif isinstance(spec, collections.Sequence):
+    elif isinstance(spec, abc.Sequence):
       if check_leaf_spec(spec):
         in_st = input_spec_to_jax_shape_dtype_struct(spec, batch_size=1)
         return jnp.zeros(in_st.shape, in_st.dtype)
@@ -171,9 +170,12 @@ def compute_flops_with_pytree(flax_model_apply_fn: Callable[[jnp.ndarray], Any],
 
   dummy_input = create_dummy_input(input_spec)
 
-  m = jax.xla_computation(flax_model_apply_fn)(*dummy_input).as_hlo_module()
-  client = jax.lib.xla_bridge.get_backend()
-  analysis = jax.lib.xla_client._xla.hlo_module_cost_analysis(client, m)  # pylint: disable=protected-access
+  if isinstance(dummy_input, dict):
+    analysis = jax.jit(flax_model_apply_fn).lower(**dummy_input).cost_analysis()
+  elif isinstance(dummy_input, abc.Sequence):
+    analysis = jax.jit(flax_model_apply_fn).lower(*dummy_input).cost_analysis()
+  else:
+    analysis = jax.jit(flax_model_apply_fn).lower(dummy_input).cost_analysis()
 
   flops = analysis['flops']
   if fuse_multiply_add:
@@ -247,7 +249,7 @@ class DummyExecutor(futures.Executor):
     self._shutdown = False
     self._shutdown_lock = threading.Lock()
 
-  def submit(self, fn: Callable[..., Any], *args, **kwargs) -> futures.Future:
+  def submit(self, fn: Callable[..., Any], *args, **kwargs) -> futures.Future:  # pylint: disable=g-bare-generic
     with self._shutdown_lock:
       if self._shutdown:
         raise RuntimeError('Cannot schedule new futures after shutdown.')
@@ -261,6 +263,6 @@ class DummyExecutor(futures.Executor):
         future.set_result(result)
       return future
 
-  def shutdown(self, wait: bool = True):
+  def shutdown(self, wait: bool = True):  # pytype: disable=signature-mismatch  # overriding-parameter-name-checks
     with self._shutdown_lock:
       self._shutdown = True

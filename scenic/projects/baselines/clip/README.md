@@ -46,13 +46,14 @@ import numpy as np
 import jax
 
 clip = torch.load('/path/to/clip.pt')
-params = jax.tree_map(lambda p: p.cpu().numpy(), clip.state_dict())
+params = jax.tree_util.tree_map(lambda p: p.cpu().numpy(), clip.state_dict())
 with open('/path/to/clip.npy', 'wb') as f:
   np.save(f, params)
 ```
 
 Note that these models run natively on images with resolution 224 and normalized
 using `IMAGE_MEAN` and `IMAGE_STD`. The maximum text length is 77.
+
 
 ### Acknowledgment
 We would like to thank Ben Poole and Dirk Weissenborn for their contribution to

@@ -1,4 +1,4 @@
-# Copyright 2022 The Scenic Authors.
+# Copyright 2023 The Scenic Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -50,6 +50,8 @@ _IMPORT_TABLE = {
         'scenic.dataset_lib.svhn_dataset',
     'video_tfrecord_dataset':
         'scenic.projects.vivit.data.video_tfrecord_dataset',
+    'av_asr_tfrecord_dataset':
+        'scenic.projects.avatar.datasets.av_asr_tfrecord_dataset',
     'bit':
         'scenic.dataset_lib.big_transfer.bit',
     'bert_wikibooks':
@@ -58,6 +60,12 @@ _IMPORT_TABLE = {
         'scenic.projects.baselines.bert.datasets.bert_glue_dataset',
     'coco_detr_detection':
         'scenic.projects.baselines.detr.input_pipeline_detection',
+    'cityscapes_variants':
+        'scenic.projects.robust_segvit.datasets.cityscapes_variants',
+    'robust_segvit_segmentation':
+        'scenic.projects.robust_segvit.datasets.segmentation_datasets',
+    'robust_segvit_variants':
+        'scenic.projects.robust_segvit.datasets.segmentation_variants',
 }
 
 

@@ -1,4 +1,4 @@
-# Copyright 2022 The Scenic Authors.
+# Copyright 2023 The Scenic Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -141,7 +141,7 @@ def compute_cost(
       jnp.max(mask, axis=1),
       jnp.expand_dims(jnp.arange(1, max_num_boxes + 1), axis=0), 0)
   n_cols = jnp.max(n_cols, axis=1)
-  return cost, n_cols
+  return cost, n_cols  # pytype: disable=bad-return-type  # jax-ndarray
 
 
 # TODO(agritsenko): remove this copy-paste from
@@ -276,6 +276,7 @@ class MatchingTest(parameterized.TestCase):
         target_is_onehot=False)
 
     indices = matcher_fn(cost)
+    self.assertEqual(indices.shape, (cost.shape[0], 2, cost.shape[1]))
     for row, col in indices:
       self.assertTrue(jnp.array_equal(row, col))
 
@@ -340,9 +341,9 @@ class MatchingTest(parameterized.TestCase):
   def test_slicer(self, matcher_fn):
     """Simulate padding and ensure that slicer can deal with it."""
     n_cols = self.cost_n_cols // 2
-    mask = np.concatenate((np.ones((1, n_cols[0]), dtype=np.bool),
+    mask = np.concatenate((np.ones((1, n_cols[0]), dtype=bool),
                            np.zeros(
-                               (1, self.num_preds - n_cols[0]), dtype=np.bool)),
+                               (1, self.num_preds - n_cols[0]), dtype=bool)),
                           axis=1)
     cost = mask * self.cost_matrix + (1. - mask) * 5
 
@@ -360,9 +361,9 @@ class MatchingTest(parameterized.TestCase):
   def test_slicer_implicit(self, matcher_fn):
     """Ensure that implicit use of slicer works."""
     n_cols = self.cost_n_cols // 2
-    mask = np.concatenate((np.ones((1, n_cols[0]), dtype=np.bool),
+    mask = np.concatenate((np.ones((1, n_cols[0]), dtype=bool),
                            np.zeros(
-                               (1, self.num_preds - n_cols[0]), dtype=np.bool)),
+                               (1, self.num_preds - n_cols[0]), dtype=bool)),
                           axis=1)
     cost = mask * self.cost_matrix + (1. - mask) * 5
 

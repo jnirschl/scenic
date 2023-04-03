@@ -1,4 +1,4 @@
-# Copyright 2022 The Scenic Authors.
+# Copyright 2023 The Scenic Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -30,7 +30,6 @@ import jax.profiler
 import ml_collections
 import numpy as np
 import optax
-from scenic.common_lib import video_utils
 from scenic.dataset_lib import dataset_utils
 from scenic.model_lib.base_models import base_model
 from scenic.train_lib import lr_schedules
@@ -135,10 +134,10 @@ def train_step(
   new_params = optax.apply_updates(train_state.params, updates)
 
   training_logs['l2_grads'] = jnp.sqrt(
-      sum([jnp.vdot(g, g) for g in jax.tree_leaves(grad)]))
-  ps = jax.tree_leaves(new_params)
+      sum([jnp.vdot(g, g) for g in jax.tree_util.tree_leaves(grad)]))
+  ps = jax.tree_util.tree_leaves(new_params)
   training_logs['l2_params'] = jnp.sqrt(sum([jnp.vdot(p, p) for p in ps]))
-  us = jax.tree_leaves(updates)
+  us = jax.tree_util.tree_leaves(updates)
   training_logs['l2_updates'] = jnp.sqrt(sum([jnp.vdot(u, u) for u in us]))
   # TODO(dehghani): Can we get this from the optimizer instead?
   training_logs['learning_rate'] = lr_fn(train_state.global_step)
@@ -249,91 +248,6 @@ def representation_fn(
   return representation, batch['label'], batch['batch_mask']
 
 
-def representation_fn_video(
-    train_state: train_utils.TrainState,
-    batch: Batch,
-    *,
-    flax_model: nn.Module,
-    config: ml_collections.ConfigDict,
-    gather_to_host: bool = True,
-) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-  """Feeds the video inputs to the model and returns their representations.
-
-  Video representations are obtained by temporally average-pooling per-frame
-  representations from the input video clip.
-
-  Args:
-    train_state: TrainState, the state of training including the current
-      global_step, model_state, rng, params, and optimizer. The buffer of this
-      argument can be donated to the computation.
-    batch: A single batch of data from the video dataset.
-    flax_model: A Flax model.
-    config: Configurations of the experiment.
-    gather_to_host: Whether to gather results from all devices to the host,
-      rather than leaving them distributed.
-
-  Returns:
-    Representation learned by the model for the given inputs and the labels and
-    masks. If `gather_to_host` is True, these are collected from all hosts.
-    The shape of the returned tensors when  `gather_to_host` is False are:
-    representation: `[num_devices, global_batch, features]`.
-    labels: `[num_devices, global_batch]`.
-    mask: `[num_devices, global_batch]`.
-    If `gather_to_host` is True then each shape is prepended with
-    `[num_hosts,]`
-  """
-  variables = {'params': train_state.params, **train_state.model_state}
-
-  representation_layer = config.video_fewshot.representation_layer.split('/')
-  filter_rep = lambda mdl, _: mdl.name == representation_layer[-1]
-
-  def get_representation(inputs, variables, training, capture_intermediates,
-                         mutable, debug):
-    _, model_state = flax_model.apply(
-        variables,
-        inputs,
-        train=training,
-        capture_intermediates=capture_intermediates,
-        mutable=mutable,
-        debug=debug)
-    if 'intermediates' not in model_state:
-      raise ValueError(
-          f'Layer with name "{config.video_fewshot.representation_layer}"'
-          ' does not exist in your model.')
-
-    representation = model_state['intermediates']
-    for rep_layer in representation_layer:
-      if rep_layer:
-        representation = representation[rep_layer]
-    representation = representation['__call__'][0]
-    return representation
-
-  # Get representations for each frame in the video sample.
-  if config.video_fewshot.get('n_sampled_frames'):
-    inputs = video_utils.sample_frames_uniformly(
-        batch['inputs'], config.video_fewshot.n_sampled_frames)
-  else:
-    inputs = batch['inputs']
-  representation = jax.vmap(
-      functools.partial(
-          get_representation,
-          variables=variables,
-          training=False,
-          capture_intermediates=filter_rep,
-          mutable=['intermediates'],
-          debug=False),
-      in_axes=1,
-      out_axes=1,
-      axis_name='time')(
-          inputs)
-  # Average pooling of representations over time axis.
-  representation = jnp.mean(representation, axis=1)
-  if gather_to_host:
-    representation = jax.lax.all_gather(representation, 'batch')
-    batch = jax.lax.all_gather(batch, 'batch')
-  return representation, batch['label'], batch['batch_mask']
-
-
 def train(
     *,
     rng: jnp.ndarray,
@@ -406,6 +320,7 @@ def train(
     train_state, start_step = train_utils.restore_checkpoint(
         workdir, train_state)
   chrono.load(train_state.metadata['chrono'])
+  train_state = train_state.replace(metadata={})
   if (start_step == 0  # Which means "no" checkpoint is restored!
       and config.get('init_from') is not None):
     restored_model_cfg = config.init_from.get('model_config')
@@ -457,12 +372,6 @@ def train(
     fewshotter = fewshot_utils.FewShotEvaluator(representation_fn_fewshot,
                                                 config.fewshot)
 
-  if 'video_fewshot' in config:
-    representation_fn_video_fewshot = functools.partial(
-        representation_fn_video, flax_model=model.flax_model, config=config)
-    video_fewshotter = fewshot_utils.FewShotEvaluatorVideo(
-        representation_fn_video_fewshot, config.video_fewshot)
-
   if 'linear_probe' in config:
     representation_fn_linear_probe = functools.partial(
         representation_fn,
@@ -479,6 +388,7 @@ def train(
   if not log_eval_steps:
     raise ValueError("'log_eval_steps' should be specified in the config.")
   checkpoint_steps = config.get('checkpoint_steps') or log_eval_steps
+  max_checkpoint_keep = config.get('max_checkpoint_keep', 3)
   log_summary_steps = config.get('log_summary_steps') or log_eval_steps
 
   def evaluate(train_state: train_utils.TrainState, step: int,
@@ -518,13 +428,19 @@ def train(
   chrono.inform(start_step, total_steps, config.batch_size, steps_per_epoch)
   logging.info('Starting training loop at step %d.', start_step + 1)
   report_progress = periodic_actions.ReportProgress(
-      num_train_steps=total_steps, writer=writer)
+      num_train_steps=total_steps,
+      writer=writer,
+      every_secs=None,
+      every_steps=config.get('report_progress_step', log_summary_steps),
+  )
 
   def write_note(note):
     if lead_host:
       platform.work_unit().set_notes(note)
 
-  hooks = [report_progress]
+  hooks = []
+  if lead_host:
+    hooks.append(report_progress)
   if config.get('xprof', True) and lead_host:
     hooks.append(periodic_actions.Profile(num_profile_steps=5, logdir=workdir))
 
@@ -560,7 +476,7 @@ def train(
     ############### LOG TRAIN SUMMARY ###############
     if ((step % log_summary_steps == 1) or (step == total_steps) or
         (lead_host and chrono.warmup)):
-      chrono.pause()
+      chrono.pause(wait_for=(train_metrics))
       if lead_host:
         chrono.tick(step, writer, write_note)
       train_summary = train_utils.log_train_summary(
@@ -587,17 +503,9 @@ def train(
         (step == total_steps)) and config.checkpoint:
       chrono.pause(wait_for=(train_state.params, train_state.opt_state))
       with report_progress.timed('checkpoint'):
-        # Sync model state across replicas.
-        train_state = train_utils.sync_model_state_across_replicas(train_state)
-        if lead_host:
-          # Take the first replica.
-          unrep_train_state = jax_utils.unreplicate(train_state)
-          metadata = unrep_train_state.metadata
-          metadata['chrono'] = chrono.save()
-          unrep_train_state.replace(metadata=metadata)  # pytype: disable=attribute-error
-          train_utils.save_checkpoint(workdir, unrep_train_state)
-          del unrep_train_state
-      chrono.resume()  # Un-pause now.
+        train_utils.handle_checkpointing(
+            train_state, chrono, workdir, max_checkpoint_keep)
+      chrono.resume()
 
     ##################### FEWSHOT EVALUATION ############################
     if 'fewshot' in config:
@@ -607,23 +515,6 @@ def train(
         with report_progress.timed('fewshot'):
           results = fewshotter.run_all(train_state, config.fewshot.datasets)
           fewshotter.log_fewshot_summary(
-              writer=writer, step=step, results=results)
-          del results
-          writer.write_scalars(step, {'zz/epoch': step / steps_per_epoch})
-        writer.flush()
-        chrono.resume()  # Un-pause now.
-
-    ########### FEWSHOT EVALUATION USING VIDEO DATASETS ###############
-
-    if 'video_fewshot' in config:
-      # Compute few-shot on-the-fly evaluation using video dataset.
-      if ((step % config.video_fewshot.log_eval_steps == 1) or
-          step == total_steps):
-        chrono.pause(wait_for=(train_state.params))
-        with report_progress.timed('video_fewshot'):
-          results = video_fewshotter.run_all(train_state,
-                                             config.video_fewshot.datasets)
-          video_fewshotter.log_fewshot_summary(
               writer=writer, step=step, results=results)
           del results
           writer.write_scalars(step, {'zz/epoch': step / steps_per_epoch})
@@ -646,6 +537,6 @@ def train(
         chrono.resume()  # Un-pause now.
 
   # Wait until computations are done before exiting.
-  jax.random.normal(jax.random.PRNGKey(0), ()).block_until_ready()
+  train_utils.barrier_across_hosts()
   # Return the train and eval summary after last step for regression testing.
   return train_state, train_summary, eval_summary

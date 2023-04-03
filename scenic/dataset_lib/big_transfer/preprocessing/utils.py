@@ -1,4 +1,4 @@
-# Copyright 2022 The Scenic Authors.
+# Copyright 2023 The Scenic Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,13 +16,13 @@
 
 """
 
-import collections
+from collections import abc
 import functools
 import tensorflow.compat.v1 as tf
 
 
 def maybe_repeat(arg, n_reps):
-  if not isinstance(arg, collections.Sequence):
+  if not isinstance(arg, abc.Sequence):
     arg = (arg,) * n_reps
   return arg
 

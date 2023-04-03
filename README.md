@@ -58,6 +58,9 @@ Projects that were developed in Scenic or used it for their experiments:
 * [PolyViT: Co-training Vision Transformers on Images, Videos and Audio](https://arxiv.org/abs/2111.12993)
 * [Simple Open-Vocabulary Object Detection with Vision Transformers](https://arxiv.org/abs/2205.06230)
 * [Learning with Neighbor Consistency for Noisy Labels](https://arxiv.org/abs/2202.02200)
+* [Token Turing Machines](https://arxiv.org/pdf/2211.09119.pdf)
+* [Vid2Seq: Large-Scale Pretraining of a Visual Language Model for Dense Video Captioning](https://arxiv.org/pdf/2302.14115.pdf)
+* [AVATAR: Unconstrained Audiovisual Speech Recognition](https://arxiv.org/abs/2206.07684)
 
 More information can be found in [projects](https://github.com/google-research/scenic/tree/main/scenic/projects#list-of-projects-hosted-in-scenic).
 
@@ -65,6 +68,7 @@ Baselines that were reproduced in Scenic:
 
 * [(ViT) An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale](https://arxiv.org/abs/2010.11929)
 * [(DETR) End-to-End Object Detection with Transformers](https://arxiv.org/abs/2005.12872)
+* [Deformable DETR: Deformable Transformers for End-to-End Object Detection](https://arxiv.org/abs/2010.04159)
 * [(CLIP) Learning Transferable Visual Models From Natural Language Supervision](https://arxiv.org/abs/2103.00020)
 * [MLP-Mixer: An all-MLP Architecture for Vision](https://arxiv.org/abs/2105.01601)
 * [BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding](https://arxiv.org/abs/1810.04805)
@@ -73,6 +77,9 @@ Baselines that were reproduced in Scenic:
 * [Deep Residual Learning for Image Recognition](https://arxiv.org/abs/1512.03385)
 * [U-Net: Convolutional Networks for Biomedical Image Segmentation](https://arxiv.org/abs/1505.04597)
 * [PCT: Point Cloud Transformer](https://arxiv.org/abs/2012.09688)
+* [Universal Transformers](https://arxiv.org/abs/1807.03819)
+* [PonderNet](https://arxiv.org/abs/2107.05407)
+
 
 More information can be found in [baseline models](https://github.com/google-research/scenic/tree/main/scenic/projects/baselines#scenic-baseline-models).
 
@@ -177,15 +184,16 @@ projects.
 
 
 ## Citing Scenic
-If you use Scenic, you can cite our [white paper](https://arxiv.org/abs/2110.11403).
+If you use Scenic, you can cite our [white paper](https://openaccess.thecvf.com/content/CVPR2022/html/Dehghani_Scenic_A_JAX_Library_for_Computer_Vision_Research_and_Beyond_CVPR_2022_paper.html).
 Here is an example BibTeX entry:
 
 ```bibtex
-@article{dehghani2021scenic,
-  author={Mostafa Dehghani and Alexey Gritsenko and Anurag Arnab and Matthias Minderer and Yi Tay},
-  title={{Scenic}: A {JAX} Library for Computer Vision Research and Beyond},
-  year={2021},
-  journal={arXiv preprint arXiv:2110.11403},
+@InProceedings{dehghani2021scenic,
+    author    = {Dehghani, Mostafa and Gritsenko, Alexey and Arnab, Anurag and Minderer, Matthias and Tay, Yi},
+    title     = {Scenic: A JAX Library for Computer Vision Research and Beyond},
+    booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+    year      = {2022},
+    pages     = {21393-21398}
 }
 ```
 
